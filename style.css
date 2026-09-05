@@ -3607,3 +3607,39 @@ button[disabled] {
     grid-column: 1;
   }
 }
+
+
+/* ============================================================
+   V22.4 CURRENT FAILURE EXCEL
+============================================================ */
+
+.failure-guide-section-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.failure-guide-section-actions .btn.excel {
+  border-color: #1e7c45;
+  background: #1e7c45;
+  color: #fff;
+}
+
+.failure-guide-section-actions .btn.excel:hover {
+  border-color: #176238;
+  background: #176238;
+}
+
+@media screen and (max-width: 767px) {
+  .failure-guide-section-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .failure-guide-section-actions .btn {
+    width: 100%;
+  }
+}

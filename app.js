@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'V22.3';
+const FRONTEND_VERSION = 'V22.4';
 const REQUIRED_BACKEND_VERSION = 'V22.2';
 
 const HISTORY_DISPLAY_ORDER = Object.freeze([
@@ -37,6 +37,8 @@ let adminSessionUser = "";
 let adminSessionPassword = "";
 let adminSelectedRepairId = "";
 let activeFailureName = "";
+let currentFailureGuides = [];
+let currentFailureCount = 0;
 let selectedFailureGuideImage = null;
 let allFailureGuides = [];
 let adminSelectedGuideId = "";
@@ -1952,6 +1954,11 @@ function bindFailureGuide() {
     }
   });
 
+  $("#exportCurrentFailureExcelBtn").addEventListener(
+    "click",
+    exportCurrentFailureDetailXlsx
+  );
+
   $("#toggleFailureGuideFormBtn").addEventListener("click", () => {
     const form = $("#failureGuideAddForm");
     form.classList.toggle("hidden");
@@ -2041,11 +2048,13 @@ async function openFailureDetailModal(failureValue) {
   if (!failure) return;
 
   activeFailureName = failure;
+  currentFailureGuides = [];
+  currentFailureCount = countFailureOccurrences(failure);
 
   $("#failureDetailTitle").textContent = failure;
   $("#failureGuideFormFailure").textContent = failure;
 
-  const localCount = countFailureOccurrences(failure);
+  const localCount = currentFailureCount;
   $("#failureDetailCount").textContent = `${localCount} ครั้ง`;
   $("#failureGuideCount").textContent = "กำลังโหลดวิธีแก้...";
   $("#failureGuideList").innerHTML =
@@ -2070,11 +2079,16 @@ async function openFailureDetailModal(failureValue) {
       return;
     }
 
+    currentFailureCount = Number(res.failCount || 0);
+    currentFailureGuides = Array.isArray(res.guides)
+      ? res.guides
+      : [];
+
     $("#failureDetailCount").textContent =
-      `${Number(res.failCount || 0)} ครั้ง`;
+      `${currentFailureCount} ครั้ง`;
 
     renderFailureGuides(
-      Array.isArray(res.guides) ? res.guides : []
+      currentFailureGuides
     );
 
   } catch (err) {
@@ -2095,6 +2109,8 @@ function closeFailureDetailModal() {
   document.body.classList.remove("modal-open");
 
   activeFailureName = "";
+  currentFailureGuides = [];
+  currentFailureCount = 0;
   resetFailureGuideForm();
 }
 
@@ -2109,7 +2125,14 @@ function countFailureOccurrences(failureValue) {
 
 
 function renderFailureGuides(guides) {
-  $("#failureGuideCount").textContent = `${guides.length} วิธีแก้`;
+  currentFailureGuides = Array.isArray(guides)
+    ? guides
+    : [];
+
+  $("#failureGuideCount").textContent =
+    `${currentFailureGuides.length} วิธีแก้`;
+
+  guides = currentFailureGuides;
 
   const list = $("#failureGuideList");
 
@@ -2308,6 +2331,1009 @@ async function sendFailureGuideOperation(values) {
 
   return pollOperationStatus(opId);
 }
+
+
+
+/* =========================
+   CURRENT FAILURE XLSX EXPORT
+   - Export เฉพาะ Failure ที่เปิดอยู่
+   - รูปถูกฝังเป็น image binary ใน .xlsx จริง
+   - ไม่ใช้ external library / CDN
+========================= */
+
+function xlsxXmlEscape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+
+function xlsxColumnName(index) {
+  let n = Number(index);
+  let name = "";
+
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    name =
+      String.fromCharCode(65 + remainder) +
+      name;
+    n = Math.floor((n - 1) / 26);
+  }
+
+  return name;
+}
+
+
+function xlsxInlineStringCell(ref, value, styleIndex = 0) {
+  return (
+    `<c r="${ref}" t="inlineStr" s="${styleIndex}">` +
+      `<is><t xml:space="preserve">${xlsxXmlEscape(value)}</t></is>` +
+    `</c>`
+  );
+}
+
+
+function xlsxNumberCell(ref, value, styleIndex = 0) {
+  const number = Number(value);
+
+  return (
+    `<c r="${ref}" t="n" s="${styleIndex}">` +
+      `<v>${Number.isFinite(number) ? number : 0}</v>` +
+    `</c>`
+  );
+}
+
+
+function dataUrlToXlsxImage(dataUrl) {
+  const match = String(dataUrl || "").match(
+    /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/
+  );
+
+  if (!match) {
+    throw new Error("รูปไม่ใช่ Base64 image ที่รองรับ");
+  }
+
+  const mime = match[1].toLowerCase();
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  let extension = "jpg";
+
+  if (mime === "image/png") {
+    extension = "png";
+  } else if (mime === "image/gif") {
+    extension = "gif";
+  } else if (
+    mime === "image/jpeg" ||
+    mime === "image/jpg"
+  ) {
+    extension = "jpg";
+  } else {
+    throw new Error(
+      "Excel รองรับรูป Export เฉพาะ JPG / PNG / GIF"
+    );
+  }
+
+  return {
+    bytes,
+    mime,
+    extension
+  };
+}
+
+
+async function loadGuideImageForXlsx(guide) {
+  const image = resolveGuideImage(guide);
+
+  if (image.fileId) {
+    const dataUrl = await getDriveImageData(
+      image.fileId
+    );
+
+    return {
+      ...dataUrlToXlsxImage(dataUrl),
+      name:
+        image.name ||
+        guide.imageName ||
+        "guide-image"
+    };
+  }
+
+  const rawUrl = String(
+    guide.imageUrl ||
+    image.thumbnailUrl ||
+    ""
+  ).trim();
+
+  if (!rawUrl) return null;
+
+  try {
+    const response = await fetch(
+      rawUrl,
+      {
+        mode: "cors",
+        cache: "no-store"
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
+    }
+
+    const blob = await response.blob();
+
+    if (!blob.type.startsWith("image/")) {
+      throw new Error("URL ไม่ใช่รูปภาพ");
+    }
+
+    const buffer = await blob.arrayBuffer();
+
+    let extension = "jpg";
+
+    if (blob.type === "image/png") {
+      extension = "png";
+    } else if (blob.type === "image/gif") {
+      extension = "gif";
+    }
+
+    return {
+      bytes: new Uint8Array(buffer),
+      mime: blob.type,
+      extension,
+      name:
+        image.name ||
+        guide.imageName ||
+        "guide-image"
+    };
+
+  } catch (err) {
+    console.warn(
+      "Cannot embed guide image:",
+      err
+    );
+
+    return null;
+  }
+}
+
+
+function xlsxCrc32(bytes) {
+  if (!xlsxCrc32.table) {
+    const table = new Uint32Array(256);
+
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+
+      for (let k = 0; k < 8; k++) {
+        c = (c & 1)
+          ? 0xEDB88320 ^ (c >>> 1)
+          : c >>> 1;
+      }
+
+      table[n] = c >>> 0;
+    }
+
+    xlsxCrc32.table = table;
+  }
+
+  let crc = 0xFFFFFFFF;
+
+  for (let i = 0; i < bytes.length; i++) {
+    crc =
+      xlsxCrc32.table[
+        (crc ^ bytes[i]) & 0xFF
+      ] ^
+      (crc >>> 8);
+  }
+
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+
+function xlsxDosDateTime(date = new Date()) {
+  const year = Math.max(
+    1980,
+    date.getFullYear()
+  );
+
+  const dosTime =
+    (date.getHours() << 11) |
+    (date.getMinutes() << 5) |
+    Math.floor(date.getSeconds() / 2);
+
+  const dosDate =
+    ((year - 1980) << 9) |
+    ((date.getMonth() + 1) << 5) |
+    date.getDate();
+
+  return {
+    time: dosTime & 0xFFFF,
+    date: dosDate & 0xFFFF
+  };
+}
+
+
+function xlsxConcatUint8(parts) {
+  const total = parts.reduce(
+    (sum, part) => sum + part.length,
+    0
+  );
+
+  const output = new Uint8Array(total);
+  let offset = 0;
+
+  parts.forEach(part => {
+    output.set(part, offset);
+    offset += part.length;
+  });
+
+  return output;
+}
+
+
+function xlsxU16(value) {
+  const bytes = new Uint8Array(2);
+  new DataView(bytes.buffer).setUint16(
+    0,
+    value & 0xFFFF,
+    true
+  );
+  return bytes;
+}
+
+
+function xlsxU32(value) {
+  const bytes = new Uint8Array(4);
+  new DataView(bytes.buffer).setUint32(
+    0,
+    value >>> 0,
+    true
+  );
+  return bytes;
+}
+
+
+function xlsxTextBytes(text) {
+  return new TextEncoder().encode(
+    String(text)
+  );
+}
+
+
+/*
+ * Minimal ZIP writer using STORE method (no compression).
+ * XLSX accepts standard ZIP entries without compression.
+ */
+function xlsxBuildZip(entries) {
+  const localParts = [];
+  const centralParts = [];
+  let localOffset = 0;
+
+  const stamp = xlsxDosDateTime();
+
+  entries.forEach(entry => {
+    const nameBytes = xlsxTextBytes(
+      entry.name
+    );
+
+    const dataBytes =
+      entry.data instanceof Uint8Array
+        ? entry.data
+        : xlsxTextBytes(entry.data);
+
+    const crc = xlsxCrc32(dataBytes);
+
+    const localHeader = xlsxConcatUint8([
+      xlsxU32(0x04034B50),
+      xlsxU16(20),
+      xlsxU16(0x0800),
+      xlsxU16(0),
+      xlsxU16(stamp.time),
+      xlsxU16(stamp.date),
+      xlsxU32(crc),
+      xlsxU32(dataBytes.length),
+      xlsxU32(dataBytes.length),
+      xlsxU16(nameBytes.length),
+      xlsxU16(0),
+      nameBytes
+    ]);
+
+    localParts.push(
+      localHeader,
+      dataBytes
+    );
+
+    const centralHeader = xlsxConcatUint8([
+      xlsxU32(0x02014B50),
+      xlsxU16(20),
+      xlsxU16(20),
+      xlsxU16(0x0800),
+      xlsxU16(0),
+      xlsxU16(stamp.time),
+      xlsxU16(stamp.date),
+      xlsxU32(crc),
+      xlsxU32(dataBytes.length),
+      xlsxU32(dataBytes.length),
+      xlsxU16(nameBytes.length),
+      xlsxU16(0),
+      xlsxU16(0),
+      xlsxU16(0),
+      xlsxU16(0),
+      xlsxU32(0),
+      xlsxU32(localOffset),
+      nameBytes
+    ]);
+
+    centralParts.push(
+      centralHeader
+    );
+
+    localOffset +=
+      localHeader.length +
+      dataBytes.length;
+  });
+
+  const localData = xlsxConcatUint8(
+    localParts
+  );
+
+  const centralData = xlsxConcatUint8(
+    centralParts
+  );
+
+  const end = xlsxConcatUint8([
+    xlsxU32(0x06054B50),
+    xlsxU16(0),
+    xlsxU16(0),
+    xlsxU16(entries.length),
+    xlsxU16(entries.length),
+    xlsxU32(centralData.length),
+    xlsxU32(localData.length),
+    xlsxU16(0)
+  ]);
+
+  return xlsxConcatUint8([
+    localData,
+    centralData,
+    end
+  ]);
+}
+
+
+function xlsxWorkbookBaseEntries(hasImages) {
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="jpg" ContentType="image/jpeg"/>
+  <Default Extension="jpeg" ContentType="image/jpeg"/>
+  <Default Extension="png" ContentType="image/png"/>
+  <Default Extension="gif" ContentType="image/gif"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+  ${
+    hasImages
+      ? '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>'
+      : ''
+  }
+</Types>`;
+
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+
+  const workbook = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Failure Detail" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`;
+
+  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="4">
+    <font><sz val="10"/><name val="Arial"/></font>
+    <font><b/><sz val="10"/><color rgb="FFFFFFFF"/><name val="Arial"/></font>
+    <font><b/><sz val="16"/><color rgb="FF1F4E78"/><name val="Arial"/></font>
+    <font><b/><sz val="10"/><color rgb="FFB42318"/><name val="Arial"/></font>
+  </fonts>
+
+  <fills count="4">
+    <fill><patternFill patternType="none"/></fill>
+    <fill><patternFill patternType="gray125"/></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FF1F4E78"/><bgColor indexed="64"/></patternFill></fill>
+    <fill><patternFill patternType="solid"><fgColor rgb="FFFCE8E6"/><bgColor indexed="64"/></patternFill></fill>
+  </fills>
+
+  <borders count="2">
+    <border><left/><right/><top/><bottom/><diagonal/></border>
+    <border>
+      <left style="thin"><color rgb="FFD9E2EC"/></left>
+      <right style="thin"><color rgb="FFD9E2EC"/></right>
+      <top style="thin"><color rgb="FFD9E2EC"/></top>
+      <bottom style="thin"><color rgb="FFD9E2EC"/></bottom>
+      <diagonal/>
+    </border>
+  </borders>
+
+  <cellStyleXfs count="1">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0"/>
+  </cellStyleXfs>
+
+  <cellXfs count="7">
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1">
+      <alignment vertical="top" wrapText="1"/>
+    </xf>
+    <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyAlignment="1">
+      <alignment horizontal="center" vertical="center" wrapText="1"/>
+    </xf>
+    <xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0"/>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1">
+      <alignment vertical="top" wrapText="1"/>
+    </xf>
+    <xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyAlignment="1">
+      <alignment horizontal="center" vertical="center"/>
+    </xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1">
+      <alignment horizontal="center" vertical="center"/>
+    </xf>
+    <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyAlignment="1">
+      <alignment vertical="center" wrapText="1"/>
+    </xf>
+  </cellXfs>
+
+  <cellStyles count="1">
+    <cellStyle name="Normal" xfId="0" builtinId="0"/>
+  </cellStyles>
+</styleSheet>`;
+
+  return [
+    {
+      name: "[Content_Types].xml",
+      data: contentTypes
+    },
+    {
+      name: "_rels/.rels",
+      data: rootRels
+    },
+    {
+      name: "xl/workbook.xml",
+      data: workbook
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      data: workbookRels
+    },
+    {
+      name: "xl/styles.xml",
+      data: styles
+    }
+  ];
+}
+
+
+function xlsxBuildFailureSheetXml(
+  failure,
+  failCount,
+  guides,
+  imageSlots
+) {
+  const rows = [];
+
+  rows.push(
+    `<row r="1" ht="28" customHeight="1">` +
+      xlsxInlineStringCell(
+        "A1",
+        "Failure Knowledge / Detailed Troubleshooting Guide",
+        2
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="2">` +
+      xlsxInlineStringCell(
+        "A2",
+        "Failure / Symptom",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "B2",
+        failure,
+        3
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="3">` +
+      xlsxInlineStringCell(
+        "A3",
+        "Fail Count",
+        1
+      ) +
+      xlsxNumberCell(
+        "B3",
+        failCount,
+        4
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="4">` +
+      xlsxInlineStringCell(
+        "A4",
+        "Exported At",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "B4",
+        new Date().toLocaleString("th-TH"),
+        3
+      ) +
+    `</row>`
+  );
+
+  const headerRow = 6;
+
+  const headers = [
+    "Guide ID",
+    "Failure / Symptom",
+    "Fail Count",
+    "วิธีแก้ไขแบบละเอียด",
+    "ผู้เพิ่ม",
+    "วันที่",
+    "เวลา",
+    "รูป",
+    "Image Name",
+    "Updated Date",
+    "Updated Time"
+  ];
+
+  rows.push(
+    `<row r="${headerRow}" ht="26" customHeight="1">` +
+    headers.map((header, index) =>
+      xlsxInlineStringCell(
+        `${xlsxColumnName(index + 1)}${headerRow}`,
+        header,
+        1
+      )
+    ).join("") +
+    `</row>`
+  );
+
+  guides.forEach((guide, index) => {
+    const rowNumber =
+      headerRow + 1 + index;
+
+    const hasImage =
+      imageSlots.has(index);
+
+    const rowHeight =
+      hasImage ? 130 : 64;
+
+    rows.push(
+      `<row r="${rowNumber}" ht="${rowHeight}" customHeight="1">` +
+        xlsxInlineStringCell(
+          `A${rowNumber}`,
+          guide.guideId || "",
+          3
+        ) +
+        xlsxInlineStringCell(
+          `B${rowNumber}`,
+          guide.failure || failure,
+          3
+        ) +
+        xlsxNumberCell(
+          `C${rowNumber}`,
+          failCount,
+          5
+        ) +
+        xlsxInlineStringCell(
+          `D${rowNumber}`,
+          guide.detail || "",
+          6
+        ) +
+        xlsxInlineStringCell(
+          `E${rowNumber}`,
+          guide.author || "",
+          3
+        ) +
+        xlsxInlineStringCell(
+          `F${rowNumber}`,
+          guide.date || "",
+          5
+        ) +
+        xlsxInlineStringCell(
+          `G${rowNumber}`,
+          guide.time || "",
+          5
+        ) +
+        xlsxInlineStringCell(
+          `H${rowNumber}`,
+          hasImage ? "" : "ไม่มีรูป",
+          5
+        ) +
+        xlsxInlineStringCell(
+          `I${rowNumber}`,
+          guide.imageName || "",
+          3
+        ) +
+        xlsxInlineStringCell(
+          `J${rowNumber}`,
+          guide.updatedDate || "",
+          5
+        ) +
+        xlsxInlineStringCell(
+          `K${rowNumber}`,
+          guide.updatedTime || "",
+          5
+        ) +
+      `</row>`
+    );
+  });
+
+  if (!guides.length) {
+    rows.push(
+      `<row r="7" ht="36" customHeight="1">` +
+        xlsxInlineStringCell(
+          "A7",
+          "ยังไม่มีวิธีแก้ไขแบบละเอียดที่บันทึกไว้",
+          3
+        ) +
+      `</row>`
+    );
+  }
+
+  const drawingXml = imageSlots.size
+    ? '<drawing r:id="rId1"/>'
+    : "";
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet
+  xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="6" topLeftCell="A7" activePane="bottomLeft" state="frozen"/>
+    </sheetView>
+  </sheetViews>
+
+  <cols>
+    <col min="1" max="1" width="20" customWidth="1"/>
+    <col min="2" max="2" width="28" customWidth="1"/>
+    <col min="3" max="3" width="12" customWidth="1"/>
+    <col min="4" max="4" width="70" customWidth="1"/>
+    <col min="5" max="5" width="18" customWidth="1"/>
+    <col min="6" max="7" width="14" customWidth="1"/>
+    <col min="8" max="8" width="38" customWidth="1"/>
+    <col min="9" max="9" width="30" customWidth="1"/>
+    <col min="10" max="11" width="16" customWidth="1"/>
+  </cols>
+
+  <sheetData>
+    ${rows.join("")}
+  </sheetData>
+
+  <mergeCells count="1">
+    <mergeCell ref="A1:K1"/>
+  </mergeCells>
+
+  ${drawingXml}
+</worksheet>`;
+}
+
+
+function xlsxBuildDrawingFiles(
+  imageRecords
+) {
+  if (!imageRecords.length) {
+    return [];
+  }
+
+  const anchors = [];
+  const rels = [];
+
+  imageRecords.forEach(
+    (record, index) => {
+      const relId = `rId${index + 1}`;
+      const picId = index + 1;
+
+      anchors.push(`
+        <xdr:oneCellAnchor>
+          <xdr:from>
+            <xdr:col>7</xdr:col>
+            <xdr:colOff>50000</xdr:colOff>
+            <xdr:row>${record.sheetRow - 1}</xdr:row>
+            <xdr:rowOff>50000</xdr:rowOff>
+          </xdr:from>
+
+          <xdr:ext cx="3048000" cy="1524000"/>
+
+          <xdr:pic>
+            <xdr:nvPicPr>
+              <xdr:cNvPr
+                id="${picId}"
+                name="${xlsxXmlEscape(record.name || `Image ${picId}`)}"
+              />
+              <xdr:cNvPicPr/>
+            </xdr:nvPicPr>
+
+            <xdr:blipFill>
+              <a:blip r:embed="${relId}"/>
+              <a:stretch><a:fillRect/></a:stretch>
+            </xdr:blipFill>
+
+            <xdr:spPr>
+              <a:xfrm>
+                <a:off x="0" y="0"/>
+                <a:ext cx="3048000" cy="1524000"/>
+              </a:xfrm>
+              <a:prstGeom prst="rect">
+                <a:avLst/>
+              </a:prstGeom>
+            </xdr:spPr>
+          </xdr:pic>
+
+          <xdr:clientData/>
+        </xdr:oneCellAnchor>
+      `);
+
+      rels.push(
+        `<Relationship
+          Id="${relId}"
+          Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+          Target="../media/image${picId}.${record.extension}"
+        />`
+      );
+    }
+  );
+
+  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr
+  xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  ${anchors.join("")}
+</xdr:wsDr>`;
+
+  const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${rels.join("")}
+</Relationships>`;
+
+  const sheetRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship
+    Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
+    Target="../drawings/drawing1.xml"
+  />
+</Relationships>`;
+
+  return [
+    {
+      name: "xl/drawings/drawing1.xml",
+      data: drawingXml
+    },
+    {
+      name: "xl/drawings/_rels/drawing1.xml.rels",
+      data: drawingRels
+    },
+    {
+      name: "xl/worksheets/_rels/sheet1.xml.rels",
+      data: sheetRels
+    }
+  ];
+}
+
+
+function downloadBinaryFile(
+  filename,
+  bytes,
+  mimeType
+) {
+  const blob = new Blob(
+    [bytes],
+    {
+      type: mimeType
+    }
+  );
+
+  const url = URL.createObjectURL(
+    blob
+  );
+
+  const link = document.createElement(
+    "a"
+  );
+
+  link.href = url;
+  link.download = filename;
+
+  document.body.appendChild(
+    link
+  );
+
+  link.click();
+  link.remove();
+
+  window.setTimeout(
+    () => URL.revokeObjectURL(url),
+    2000
+  );
+}
+
+
+async function exportCurrentFailureDetailXlsx() {
+  const failure = normalizeFailure(
+    activeFailureName
+  );
+
+  if (!failure) {
+    toast(
+      "กรุณาเปิด Failure ที่ต้องการ Export ก่อน",
+      "error"
+    );
+    return;
+  }
+
+  const button =
+    $("#exportCurrentFailureExcelBtn");
+
+  const originalText =
+    button.textContent;
+
+  button.disabled = true;
+  button.textContent =
+    "กำลังสร้าง Excel...";
+
+  try {
+    const guides = Array.isArray(
+      currentFailureGuides
+    )
+      ? currentFailureGuides
+      : [];
+
+    const failCount =
+      Number(currentFailureCount) ||
+      countFailureOccurrences(failure);
+
+    const imageRecords = [];
+    const imageSlots = new Set();
+
+    for (
+      let index = 0;
+      index < guides.length;
+      index++
+    ) {
+      const guide = guides[index];
+
+      if (
+        !guide.imageFileId &&
+        !guide.imageUrl
+      ) {
+        continue;
+      }
+
+      try {
+        const loaded =
+          await loadGuideImageForXlsx(
+            guide
+          );
+
+        if (!loaded) continue;
+
+        imageSlots.add(index);
+
+        imageRecords.push({
+          ...loaded,
+          guideIndex: index,
+          sheetRow: 7 + index
+        });
+
+      } catch (err) {
+        console.warn(
+          "Skip image in XLSX:",
+          guide.guideId,
+          err
+        );
+      }
+    }
+
+    const entries =
+      xlsxWorkbookBaseEntries(
+        imageRecords.length > 0
+      );
+
+    entries.push({
+      name:
+        "xl/worksheets/sheet1.xml",
+      data:
+        xlsxBuildFailureSheetXml(
+          failure,
+          failCount,
+          guides,
+          imageSlots
+        )
+    });
+
+    entries.push(
+      ...xlsxBuildDrawingFiles(
+        imageRecords
+      )
+    );
+
+    imageRecords.forEach(
+      (record, index) => {
+        entries.push({
+          name:
+            `xl/media/image${index + 1}.${record.extension}`,
+          data:
+            record.bytes
+        });
+      }
+    );
+
+    const zipBytes =
+      xlsxBuildZip(entries);
+
+    const failurePart =
+      sanitizeExportFilePart(
+        failure
+      ) || "Failure";
+
+    downloadBinaryFile(
+      `${failurePart}_Detailed_Guide_${exportTimestamp()}.xlsx`,
+      zipBytes,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    const embeddedCount =
+      imageRecords.length;
+
+    toast(
+      embeddedCount
+        ? `Export ${failure} พร้อมรูปจริง ${embeddedCount} รูปแล้ว`
+        : `Export ${failure} แล้ว (ไม่มีรูปที่ฝังได้)`,
+      "success"
+    );
+
+  } catch (err) {
+    console.error(err);
+
+    toast(
+      err.message ||
+      "สร้าง Excel Failure Detail ไม่สำเร็จ",
+      "error"
+    );
+
+  } finally {
+    button.disabled = false;
+    button.textContent =
+      originalText;
+  }
+}
+
 
 
 /* ---------- Admin Failure Guide ---------- */
