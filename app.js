@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'V22.5';
+const FRONTEND_VERSION = 'V22.6';
 const REQUIRED_BACKEND_VERSION = 'V22.2';
 
 const HISTORY_DISPLAY_ORDER = Object.freeze([
@@ -958,6 +958,11 @@ function bindDashboard() {
   $("#dashboardModel").addEventListener("change", renderDashboard);
   $("#dashboardStation").addEventListener("change", renderDashboard);
   $("#topFailureCount").addEventListener("change", renderDashboard);
+
+  $("#exportDashboardExcelBtn").addEventListener(
+    "click",
+    exportDashboardExcel
+  );
 
   $("#dashboardRefreshBtn").addEventListener("click", async () => {
     await refreshAllData({ showToast: true });
@@ -3696,7 +3701,10 @@ function xlsxBuildDrawingFiles(
             <xdr:rowOff>50000</xdr:rowOff>
           </xdr:from>
 
-          <xdr:ext cx="3048000" cy="1524000"/>
+          <xdr:ext
+            cx="${Number.isFinite(record.cx) ? record.cx : 3048000}"
+            cy="${Number.isFinite(record.cy) ? record.cy : 1524000}"
+          />
 
           <xdr:pic>
             <xdr:nvPicPr>
@@ -3715,7 +3723,10 @@ function xlsxBuildDrawingFiles(
             <xdr:spPr>
               <a:xfrm>
                 <a:off x="0" y="0"/>
-                <a:ext cx="3048000" cy="1524000"/>
+                <a:ext
+                  cx="${Number.isFinite(record.cx) ? record.cx : 3048000}"
+                  cy="${Number.isFinite(record.cy) ? record.cy : 1524000}"
+                />
               </a:xfrm>
               <a:prstGeom prst="rect">
                 <a:avLst/>
@@ -4260,6 +4271,1312 @@ async function deleteAdminFailureGuide(guideId) {
   } catch (err) {
     console.error(err);
     toast(err.message || "ลบ Failure Guide ไม่สำเร็จ", "error");
+  }
+}
+
+
+
+
+/* =========================
+   DASHBOARD EXCEL EXPORT
+   V22.6
+   - Uses current Dashboard filters
+   - Embeds Top Failure + Timeline as real PNG charts in XLSX
+   - KPI + Failure Ranking are exported in the same worksheet
+========================= */
+
+function getDashboardExportContext() {
+  const type = $("#dashboardPeriodType").value;
+  const model = $("#dashboardModel").value || "ALL";
+  const station = $("#dashboardStation").value || "ALL";
+
+  let periodValue = "ALL";
+  let periodLabel = "ทั้งหมด";
+
+  if (type === "day") {
+    periodValue = $("#dashboardDay").value || "ALL";
+    periodLabel = periodValue;
+  } else if (type === "week") {
+    periodValue = $("#dashboardWeek").value || "ALL";
+    periodLabel = periodValue;
+  } else if (type === "month") {
+    periodValue = $("#dashboardMonth").value || "ALL";
+    periodLabel = periodValue;
+  } else if (type === "year") {
+    periodValue = $("#dashboardYear").value || "ALL";
+    periodLabel = periodValue;
+  }
+
+  const typeLabels = {
+    all: "ALL",
+    day: "รายวัน",
+    week: "รายสัปดาห์",
+    month: "รายเดือน",
+    year: "1 ปี"
+  };
+
+  return {
+    type,
+    typeLabel: typeLabels[type] || type,
+    periodValue,
+    periodLabel,
+    model,
+    station,
+    topFailureCount:
+      Number($("#topFailureCount").value || 5)
+  };
+}
+
+
+function getDashboardKpiData(records) {
+  const repairTimes = records
+    .map(record => Number(record.repairTime))
+    .filter(value =>
+      Number.isFinite(value) &&
+      value >= 0
+    );
+
+  const average = repairTimes.length
+    ? repairTimes.reduce(
+        (sum, value) => sum + value,
+        0
+      ) / repairTimes.length
+    : 0;
+
+  const models = new Set(
+    records
+      .map(record =>
+        String(record.model || "").trim()
+      )
+      .filter(Boolean)
+  );
+
+  const stations = new Set(
+    records
+      .map(record =>
+        String(record.station || "").trim()
+      )
+      .filter(Boolean)
+  );
+
+  return {
+    totalRecords: records.length,
+    averageRepairTime: Math.round(average),
+    modelCount: models.size,
+    stationCount: stations.size
+  };
+}
+
+
+function getDashboardTopFailureData(records) {
+  const requestedLimit =
+    Number($("#topFailureCount").value || 5);
+
+  const limit = Number.isFinite(
+    requestedLimit
+  )
+    ? Math.min(
+        99,
+        Math.max(
+          0,
+          Math.trunc(requestedLimit)
+        )
+      )
+    : 5;
+
+  const allGroups = aggregateFailures(
+    records
+  ).sort(
+    (a, b) =>
+      b.count - a.count ||
+      a.failure.localeCompare(
+        b.failure
+      )
+  );
+
+  const groups =
+    limit === 0
+      ? []
+      : allGroups.slice(0, limit);
+
+  return {
+    limit,
+    total: records.length,
+    groups
+  };
+}
+
+
+function getDashboardTimelineData(records) {
+  const type =
+    $("#dashboardPeriodType").value;
+
+  const groups = new Map();
+
+  records.forEach(record => {
+    const date =
+      parseRepairDate(record.date);
+
+    if (!date) return;
+
+    let key;
+    let label;
+
+    if (type === "day") {
+      const hour =
+        parseRecordHour(record.time);
+
+      if (hour === null) return;
+
+      key = String(hour).padStart(
+        2,
+        "0"
+      );
+
+      label =
+        `${String(hour).padStart(2, "0")}:00`;
+
+    } else if (type === "week") {
+      key = toDateInputValue(date);
+      label = formatShortDate(date);
+
+    } else if (type === "month") {
+      key = toDateInputValue(date);
+      label = formatShortDate(date);
+
+    } else if (type === "year") {
+      key = toMonthInputValue(date);
+      label = formatMonthLabel(date);
+
+    } else {
+      key = toMonthInputValue(date);
+      label = formatMonthYearLabel(date);
+    }
+
+    groups.set(
+      key,
+      {
+        label,
+        count:
+          (groups.get(key)?.count || 0) +
+          1
+      }
+    );
+  });
+
+  let values = Array.from(
+    groups.entries()
+  )
+    .sort(
+      (a, b) =>
+        a[0].localeCompare(b[0])
+    )
+    .map(([, value]) => value);
+
+  let subtitle =
+    "จำนวน Repair Records ตามช่วงเวลา";
+
+  if (type === "day") {
+    values = buildHourlyTimeline(groups);
+    subtitle =
+      "จำนวน Repair Records แยกตามชั่วโมง";
+
+  } else if (type === "week") {
+    subtitle =
+      "จำนวน Repair Records แยกตามวันในสัปดาห์";
+
+  } else if (type === "month") {
+    subtitle =
+      "จำนวน Repair Records แยกตามวันในเดือน";
+
+  } else if (type === "year") {
+    values =
+      buildYearlyMonthTimeline(groups);
+
+    subtitle =
+      "จำนวน Repair Records แยกตามเดือนของปีที่เลือก";
+
+  } else {
+    subtitle =
+      "จำนวน Repair Records ทั้งหมด แยกตามเดือน";
+  }
+
+  return {
+    type,
+    subtitle,
+    values
+  };
+}
+
+
+function dashboardCanvasColors() {
+  const root =
+    getComputedStyle(
+      document.documentElement
+    );
+
+  const read = (name, fallback) => {
+    const value =
+      root.getPropertyValue(name).trim();
+
+    return value || fallback;
+  };
+
+  return {
+    primary: read(
+      "--primary",
+      "#155eef"
+    ),
+    primaryDark: read(
+      "--primary-dark",
+      "#004eeb"
+    ),
+    text: read(
+      "--text",
+      "#182230"
+    ),
+    muted: read(
+      "--muted",
+      "#667085"
+    ),
+    line: read(
+      "--line",
+      "#d8e1ec"
+    ),
+    soft: read(
+      "--soft",
+      "#eef4ff"
+    ),
+    background: "#ffffff"
+  };
+}
+
+
+function canvasRoundRect(
+  ctx,
+  x,
+  y,
+  width,
+  height,
+  radius
+) {
+  const r = Math.min(
+    radius,
+    width / 2,
+    height / 2
+  );
+
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + width - r, y);
+  ctx.quadraticCurveTo(
+    x + width,
+    y,
+    x + width,
+    y + r
+  );
+  ctx.lineTo(
+    x + width,
+    y + height - r
+  );
+  ctx.quadraticCurveTo(
+    x + width,
+    y + height,
+    x + width - r,
+    y + height
+  );
+  ctx.lineTo(x + r, y + height);
+  ctx.quadraticCurveTo(
+    x,
+    y + height,
+    x,
+    y + height - r
+  );
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(
+    x,
+    y,
+    x + r,
+    y
+  );
+  ctx.closePath();
+}
+
+
+function canvasFitText(
+  ctx,
+  text,
+  maxWidth
+) {
+  const source =
+    String(text || "");
+
+  if (
+    ctx.measureText(source).width <=
+    maxWidth
+  ) {
+    return source;
+  }
+
+  let output = source;
+
+  while (
+    output.length > 1 &&
+    ctx.measureText(
+      output + "…"
+    ).width > maxWidth
+  ) {
+    output = output.slice(0, -1);
+  }
+
+  return output + "…";
+}
+
+
+function createTopFailureChartPng(
+  groups,
+  total,
+  limit
+) {
+  const colors =
+    dashboardCanvasColors();
+
+  const width = 820;
+  const rowHeight = 72;
+  const height = Math.max(
+    360,
+    116 +
+      Math.max(
+        groups.length,
+        1
+      ) *
+      rowHeight
+  );
+
+  const canvas =
+    document.createElement("canvas");
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx =
+    canvas.getContext("2d");
+
+  ctx.fillStyle =
+    colors.background;
+
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
+  ctx.fillStyle = colors.text;
+  ctx.font =
+    "700 25px Arial, sans-serif";
+
+  ctx.fillText(
+    "Top Failure",
+    28,
+    38
+  );
+
+  ctx.fillStyle = colors.muted;
+  ctx.font =
+    "14px Arial, sans-serif";
+
+  ctx.fillText(
+    limit === 0
+      ? "เลือก 0 รายการ — ไม่แสดง Top Failure"
+      : `Top ${limit} Failure จาก ${total} Repair Records`,
+    28,
+    65
+  );
+
+  if (!groups.length) {
+    ctx.fillStyle = colors.muted;
+    ctx.font =
+      "16px Arial, sans-serif";
+
+    ctx.fillText(
+      "ยังไม่มีข้อมูลในช่วงที่เลือก",
+      28,
+      120
+    );
+
+    return dataUrlToXlsxImage(
+      canvas.toDataURL("image/png")
+    );
+  }
+
+  const maxCount = Math.max(
+    ...groups.map(
+      group => group.count
+    ),
+    1
+  );
+
+  groups.forEach(
+    (group, index) => {
+      const top =
+        92 +
+        index * rowHeight;
+
+      const pct = total > 0
+        ? (group.count / total) * 100
+        : 0;
+
+      const barWidth =
+        (group.count / maxCount) *
+        470;
+
+      ctx.fillStyle =
+        colors.primary;
+
+      ctx.font =
+        "700 14px Arial, sans-serif";
+
+      ctx.fillText(
+        String(index + 1),
+        28,
+        top + 17
+      );
+
+      ctx.fillStyle =
+        colors.text;
+
+      ctx.font =
+        "700 15px Arial, sans-serif";
+
+      const label =
+        canvasFitText(
+          ctx,
+          group.failure,
+          520
+        );
+
+      ctx.fillText(
+        label,
+        58,
+        top + 17
+      );
+
+      ctx.textAlign = "right";
+      ctx.fillText(
+        String(group.count),
+        width - 30,
+        top + 17
+      );
+      ctx.textAlign = "left";
+
+      ctx.fillStyle =
+        colors.soft;
+
+      canvasRoundRect(
+        ctx,
+        58,
+        top + 29,
+        650,
+        13,
+        7
+      );
+
+      ctx.fill();
+
+      ctx.fillStyle =
+        colors.primary;
+
+      canvasRoundRect(
+        ctx,
+        58,
+        top + 29,
+        Math.max(
+          8,
+          barWidth
+        ),
+        13,
+        7
+      );
+
+      ctx.fill();
+
+      ctx.fillStyle =
+        colors.muted;
+
+      ctx.font =
+        "12px Arial, sans-serif";
+
+      ctx.fillText(
+        `${pct.toFixed(1)}% ของทั้งหมด · Avg. Repair ${Math.round(group.avgRepairTime)} min`,
+        58,
+        top + 61
+      );
+    }
+  );
+
+  return dataUrlToXlsxImage(
+    canvas.toDataURL("image/png")
+  );
+}
+
+
+function createTimelineChartPng(
+  timeline
+) {
+  const colors =
+    dashboardCanvasColors();
+
+  const values =
+    Array.isArray(timeline.values)
+      ? timeline.values
+      : [];
+
+  const minWidth = 820;
+
+  const width = Math.max(
+    minWidth,
+    90 +
+      Math.max(
+        values.length,
+        1
+      ) *
+      58
+  );
+
+  const height = 500;
+
+  const canvas =
+    document.createElement("canvas");
+
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx =
+    canvas.getContext("2d");
+
+  ctx.fillStyle =
+    colors.background;
+
+  ctx.fillRect(
+    0,
+    0,
+    width,
+    height
+  );
+
+  ctx.fillStyle = colors.text;
+  ctx.font =
+    "700 25px Arial, sans-serif";
+
+  ctx.fillText(
+    "Timeline",
+    28,
+    38
+  );
+
+  ctx.fillStyle = colors.muted;
+  ctx.font =
+    "14px Arial, sans-serif";
+
+  ctx.fillText(
+    timeline.subtitle,
+    28,
+    65
+  );
+
+  if (
+    !values.length ||
+    !values.some(
+      value => value.count > 0
+    )
+  ) {
+    ctx.fillStyle = colors.muted;
+    ctx.font =
+      "16px Arial, sans-serif";
+
+    ctx.fillText(
+      "ยังไม่มีข้อมูลในช่วงที่เลือก",
+      28,
+      120
+    );
+
+    return dataUrlToXlsxImage(
+      canvas.toDataURL("image/png")
+    );
+  }
+
+  const chartLeft = 48;
+  const chartRight = 28;
+  const chartTop = 105;
+  const chartBottom = 72;
+
+  const chartWidth =
+    width -
+    chartLeft -
+    chartRight;
+
+  const chartHeight =
+    height -
+    chartTop -
+    chartBottom;
+
+  const maxCount = Math.max(
+    ...values.map(
+      value => value.count
+    ),
+    1
+  );
+
+  ctx.strokeStyle =
+    colors.line;
+
+  ctx.lineWidth = 1;
+
+  for (
+    let grid = 0;
+    grid <= 4;
+    grid++
+  ) {
+    const y =
+      chartTop +
+      (chartHeight / 4) *
+      grid;
+
+    ctx.beginPath();
+    ctx.moveTo(
+      chartLeft,
+      y
+    );
+    ctx.lineTo(
+      width - chartRight,
+      y
+    );
+    ctx.stroke();
+  }
+
+  const slot =
+    chartWidth /
+    Math.max(
+      values.length,
+      1
+    );
+
+  const barWidth =
+    Math.max(
+      12,
+      Math.min(
+        34,
+        slot * 0.55
+      )
+    );
+
+  values.forEach(
+    (value, index) => {
+      const barHeight =
+        value.count > 0
+          ? Math.max(
+              5,
+              (value.count / maxCount) *
+              chartHeight
+            )
+          : 0;
+
+      const x =
+        chartLeft +
+        slot * index +
+        (slot - barWidth) / 2;
+
+      const y =
+        chartTop +
+        chartHeight -
+        barHeight;
+
+      ctx.fillStyle =
+        colors.primary;
+
+      if (barHeight > 0) {
+        canvasRoundRect(
+          ctx,
+          x,
+          y,
+          barWidth,
+          barHeight,
+          5
+        );
+
+        ctx.fill();
+      }
+
+      if (value.count > 0) {
+        ctx.fillStyle =
+          colors.text;
+
+        ctx.font =
+          "700 11px Arial, sans-serif";
+
+        ctx.textAlign = "center";
+
+        ctx.fillText(
+          String(value.count),
+          x + barWidth / 2,
+          y - 7
+        );
+      }
+
+      ctx.fillStyle =
+        colors.muted;
+
+      ctx.font =
+        "10px Arial, sans-serif";
+
+      ctx.textAlign = "center";
+
+      ctx.save();
+
+      ctx.translate(
+        x + barWidth / 2,
+        chartTop +
+          chartHeight +
+          19
+      );
+
+      if (
+        values.length > 14
+      ) {
+        ctx.rotate(
+          -Math.PI / 4
+        );
+      }
+
+      ctx.fillText(
+        String(value.label || ""),
+        0,
+        0
+      );
+
+      ctx.restore();
+    }
+  );
+
+  ctx.textAlign = "left";
+
+  return dataUrlToXlsxImage(
+    canvas.toDataURL("image/png")
+  );
+}
+
+
+function xlsxBuildDashboardSheetXml({
+  context,
+  kpis,
+  topFailure,
+  timeline,
+  rankingStartRow,
+  hasTopChart,
+  hasTimelineChart
+}) {
+  const rows = [];
+
+  rows.push(
+    `<row r="1" ht="30" customHeight="1">` +
+      xlsxInlineStringCell(
+        "A1",
+        "Failure Dashboard Export",
+        2
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="2">` +
+      xlsxInlineStringCell(
+        "A2",
+        "มุมมองเวลา",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "B2",
+        context.typeLabel,
+        3
+      ) +
+      xlsxInlineStringCell(
+        "D2",
+        "ช่วงที่เลือก",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "E2",
+        context.periodLabel,
+        3
+      ) +
+      xlsxInlineStringCell(
+        "G2",
+        "Model",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "H2",
+        context.model,
+        3
+      ) +
+      xlsxInlineStringCell(
+        "J2",
+        "Station",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "K2",
+        context.station,
+        3
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="3">` +
+      xlsxInlineStringCell(
+        "A3",
+        "จำนวน Top Failure",
+        1
+      ) +
+      xlsxNumberCell(
+        "B3",
+        context.topFailureCount,
+        5
+      ) +
+      xlsxInlineStringCell(
+        "D3",
+        "Exported At",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "E3",
+        new Date().toLocaleString("th-TH"),
+        3
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="5" ht="24" customHeight="1">` +
+      xlsxInlineStringCell(
+        "A5",
+        "Repair Records",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "D5",
+        "Avg. Repair Time",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "G5",
+        "Models",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "J5",
+        "Stations",
+        1
+      ) +
+    `</row>`
+  );
+
+  rows.push(
+    `<row r="6" ht="34" customHeight="1">` +
+      xlsxNumberCell(
+        "A6",
+        kpis.totalRecords,
+        4
+      ) +
+      xlsxNumberCell(
+        "D6",
+        kpis.averageRepairTime,
+        4
+      ) +
+      xlsxNumberCell(
+        "G6",
+        kpis.modelCount,
+        4
+      ) +
+      xlsxNumberCell(
+        "J6",
+        kpis.stationCount,
+        4
+      ) +
+    `</row>`
+  );
+
+  const topLabelRow = 8;
+
+  rows.push(
+    `<row r="${topLabelRow}" ht="24" customHeight="1">` +
+      xlsxInlineStringCell(
+        `A${topLabelRow}`,
+        hasTopChart
+          ? "Top Failure"
+          : "Top Failure — ไม่มีข้อมูล",
+        1
+      ) +
+      xlsxInlineStringCell(
+        `G${topLabelRow}`,
+        hasTimelineChart
+          ? "Timeline"
+          : "Timeline — ไม่มีข้อมูล",
+        1
+      ) +
+    `</row>`
+  );
+
+  const headerRow =
+    rankingStartRow;
+
+  rows.push(
+    `<row r="${headerRow}" ht="26" customHeight="1">` +
+      xlsxInlineStringCell(
+        `A${headerRow}`,
+        "อันดับ",
+        1
+      ) +
+      xlsxInlineStringCell(
+        `B${headerRow}`,
+        "Failure / Symptom",
+        1
+      ) +
+      xlsxInlineStringCell(
+        `G${headerRow}`,
+        "จำนวน",
+        1
+      ) +
+      xlsxInlineStringCell(
+        `H${headerRow}`,
+        "% ของทั้งหมด",
+        1
+      ) +
+      xlsxInlineStringCell(
+        `J${headerRow}`,
+        "Avg. Repair Time",
+        1
+      ) +
+    `</row>`
+  );
+
+  topFailure.groups.forEach(
+    (group, index) => {
+      const row =
+        headerRow + 1 + index;
+
+      const pct =
+        topFailure.total > 0
+          ? (
+              group.count /
+              topFailure.total
+            ) *
+            100
+          : 0;
+
+      rows.push(
+        `<row r="${row}" ht="30" customHeight="1">` +
+          xlsxNumberCell(
+            `A${row}`,
+            index + 1,
+            5
+          ) +
+          xlsxInlineStringCell(
+            `B${row}`,
+            group.failure,
+            3
+          ) +
+          xlsxNumberCell(
+            `G${row}`,
+            group.count,
+            5
+          ) +
+          xlsxInlineStringCell(
+            `H${row}`,
+            `${pct.toFixed(1)}%`,
+            5
+          ) +
+          xlsxInlineStringCell(
+            `J${row}`,
+            `${Math.round(group.avgRepairTime)} min`,
+            5
+          ) +
+        `</row>`
+      );
+    }
+  );
+
+  if (!topFailure.groups.length) {
+    rows.push(
+      `<row r="${headerRow + 1}">` +
+        xlsxInlineStringCell(
+          `A${headerRow + 1}`,
+          "ยังไม่มีข้อมูล Failure Ranking",
+          3
+        ) +
+      `</row>`
+    );
+  }
+
+  const drawingXml =
+    hasTopChart ||
+    hasTimelineChart
+      ? '<drawing r:id="rId1"/>'
+      : "";
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet
+  xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+
+  <sheetViews>
+    <sheetView workbookViewId="0">
+      <pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/>
+    </sheetView>
+  </sheetViews>
+
+  <cols>
+    <col min="1" max="1" width="12" customWidth="1"/>
+    <col min="2" max="6" width="18" customWidth="1"/>
+    <col min="7" max="7" width="12" customWidth="1"/>
+    <col min="8" max="9" width="17" customWidth="1"/>
+    <col min="10" max="12" width="18" customWidth="1"/>
+  </cols>
+
+  <sheetData>
+    ${rows.join("")}
+  </sheetData>
+
+  <mergeCells count="9">
+    <mergeCell ref="A1:L1"/>
+    <mergeCell ref="A5:C5"/>
+    <mergeCell ref="D5:F5"/>
+    <mergeCell ref="G5:I5"/>
+    <mergeCell ref="J5:L5"/>
+    <mergeCell ref="A6:C6"/>
+    <mergeCell ref="D6:F6"/>
+    <mergeCell ref="G6:I6"/>
+    <mergeCell ref="J6:L6"/>
+  </mergeCells>
+
+  ${drawingXml}
+</worksheet>`;
+}
+
+
+async function exportDashboardExcel() {
+  const button =
+    $("#exportDashboardExcelBtn");
+
+  const originalText =
+    button.textContent;
+
+  button.disabled = true;
+  button.textContent =
+    "กำลังสร้าง Excel...";
+
+  try {
+    const records =
+      getDashboardFilteredRecords();
+
+    const context =
+      getDashboardExportContext();
+
+    const kpis =
+      getDashboardKpiData(records);
+
+    const topFailure =
+      getDashboardTopFailureData(
+        records
+      );
+
+    const timeline =
+      getDashboardTimelineData(
+        records
+      );
+
+    const imageRecords = [];
+
+    let topImage = null;
+    let timelineImage = null;
+
+    try {
+      topImage =
+        createTopFailureChartPng(
+          topFailure.groups,
+          topFailure.total,
+          topFailure.limit
+        );
+
+      const topDisplayWidth =
+        720;
+
+      const topDisplayHeight =
+        Math.min(
+          1000,
+          Math.max(
+            360,
+            topImage.bytes.length
+              ? 116 +
+                Math.max(
+                  topFailure.groups.length,
+                  1
+                ) *
+                72
+              : 360
+          )
+        );
+
+      imageRecords.push({
+        ...topImage,
+        name: "Top Failure",
+        sheetRow: 9,
+        imageColumn: 0,
+        cx:
+          topDisplayWidth *
+          9525,
+        cy:
+          topDisplayHeight *
+          9525
+      });
+
+    } catch (err) {
+      console.warn(
+        "Top Failure chart export failed:",
+        err
+      );
+    }
+
+    try {
+      timelineImage =
+        createTimelineChartPng(
+          timeline
+        );
+
+      const timelineWidth =
+        Math.min(
+          1200,
+          Math.max(
+            720,
+            100 +
+              Math.max(
+                timeline.values.length,
+                1
+              ) *
+              55
+          )
+        );
+
+      imageRecords.push({
+        ...timelineImage,
+        name: "Timeline",
+        sheetRow: 9,
+        imageColumn: 6,
+        cx:
+          timelineWidth *
+          9525,
+        cy:
+          500 *
+          9525
+      });
+
+    } catch (err) {
+      console.warn(
+        "Timeline chart export failed:",
+        err
+      );
+    }
+
+    const topRowsNeeded =
+      topFailure.groups.length
+        ? Math.ceil(
+            Math.min(
+              1000,
+              116 +
+              topFailure.groups.length *
+              72
+            ) / 20
+          )
+        : 18;
+
+    const timelineRowsNeeded =
+      Math.ceil(
+        500 / 20
+      );
+
+    const rankingStartRow =
+      10 +
+      Math.max(
+        topRowsNeeded,
+        timelineRowsNeeded
+      ) +
+      2;
+
+    const sheetXml =
+      xlsxBuildDashboardSheetXml({
+        context,
+        kpis,
+        topFailure,
+        timeline,
+        rankingStartRow,
+        hasTopChart:
+          Boolean(topImage),
+        hasTimelineChart:
+          Boolean(timelineImage)
+      });
+
+    const entries =
+      xlsxBuildSingleSheetEntries({
+        sheetName:
+          "Failure Dashboard",
+        sheetXml,
+        imageRecords
+      });
+
+    const zipBytes =
+      xlsxBuildZip(entries);
+
+    const periodPart =
+      sanitizeExportFilePart(
+        context.periodValue
+      ) || "ALL";
+
+    const modelPart =
+      sanitizeExportFilePart(
+        context.model
+      ) || "ALL_MODEL";
+
+    const stationPart =
+      sanitizeExportFilePart(
+        context.station
+      ) || "ALL_STATION";
+
+    downloadBinaryFile(
+      `Failure_Dashboard_${periodPart}_${modelPart}_${stationPart}_${exportTimestamp()}.xlsx`,
+      zipBytes,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+
+    toast(
+      `Export Dashboard ${records.length} Records พร้อมกราฟแล้ว`,
+      "success"
+    );
+
+  } catch (err) {
+    console.error(err);
+
+    toast(
+      err.message ||
+      "Export Dashboard Excel ไม่สำเร็จ",
+      "error"
+    );
+
+  } finally {
+    button.disabled = false;
+    button.textContent =
+      originalText;
   }
 }
 

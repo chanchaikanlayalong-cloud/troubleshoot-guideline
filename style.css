@@ -3643,3 +3643,60 @@ button[disabled] {
     width: 100%;
   }
 }
+
+
+/* ============================================================
+   V22.6 DASHBOARD EXCEL EXPORT
+============================================================ */
+
+.dashboard-head-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dashboard-head-actions .btn.excel {
+  border-color: #1e7c45;
+  background: #1e7c45;
+  color: #fff;
+}
+
+.dashboard-head-actions .btn.excel:hover {
+  border-color: #176238;
+  background: #176238;
+}
+
+@media screen and (max-width: 767px) {
+  #dashboardPage .dashboard-head {
+    align-items: start !important;
+  }
+
+  .dashboard-head-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: min(132px, 100%);
+  }
+
+  .dashboard-head-actions .btn {
+    width: 100%;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    font-size: 9px !important;
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+}
+
+@media screen and (max-height: 560px) and (orientation: landscape) {
+  .dashboard-head-actions {
+    display: flex;
+    width: auto;
+  }
+
+  .dashboard-head-actions .btn {
+    width: auto;
+    min-width: 68px !important;
+  }
+}
