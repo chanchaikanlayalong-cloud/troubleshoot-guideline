@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
   <title>Troubleshoot Guideline</title>
-  <link rel="stylesheet" href="style.css?v=18" />
+  <link rel="stylesheet" href="style.css?v=21" />
 </head>
 <body>
   <header class="topbar">
@@ -177,7 +177,7 @@
         </div>
 
         <div class="filters">
-          <input id="searchBox" placeholder="ค้นหา Repair ID / Model / Station / Failure / Repair Action / คนทำ..." />
+          <input id="searchBox" placeholder="ค้นหา Failure / Repair Action / Model / Station / คนทำ / Repair ID..." />
           <select id="filterModel">
             <option value="">ทุก Model</option>
           </select>
@@ -187,22 +187,20 @@
           <table>
             <thead>
               <tr>
-                <th>Repair ID</th>
-                <th>วันที่</th>
-                <th>เวลา</th>
-                <th>Model</th>
-                <th>Station</th>
                 <th>Failure / Symptom</th>
                 <th>Repair Action</th>
+                <th>รูป</th>
+                <th>Model</th>
+                <th>Station</th>
                 <th>เริ่มซ่อม</th>
                 <th>ซ่อมเสร็จ</th>
                 <th>Repair Time (นาที)</th>
                 <th>คนทำ</th>
-                <th>รูป</th>
+                <th>Repair ID</th>
               </tr>
             </thead>
             <tbody id="historyBody">
-              <tr><td colspan="12" class="empty">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colspan="10" class="empty">ยังไม่มีข้อมูล</td></tr>
             </tbody>
           </table>
         </div>
@@ -214,16 +212,22 @@
       </div>
     </section>
 
-    <section id="dashboardPage" class="page">
+    <section id="dashboardPage" class="page dashboard-page">
       <div class="dashboard-grid">
 
-        <div class="card dashboard-filter-card">
+        <div class="card dashboard-filter-card dashboard-filter-shell">
           <div class="dashboard-head">
             <div>
               <h2>Failure Dashboard</h2>
               <p>วิเคราะห์หัวข้อ Failure จากข้อมูล Repair History</p>
             </div>
             <button class="btn ghost" id="dashboardRefreshBtn">รีเฟรช</button>
+          </div>
+
+          <div class="dashboard-layout-indicator" aria-hidden="true">
+            <span class="layout-desktop">Desktop layout</span>
+            <span class="layout-portrait">Mobile portrait</span>
+            <span class="layout-landscape">Mobile landscape</span>
           </div>
 
           <div class="dashboard-filters">
@@ -631,6 +635,6 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=18"></script>
+  <script src="app.js?v=21"></script>
 </body>
 </html>

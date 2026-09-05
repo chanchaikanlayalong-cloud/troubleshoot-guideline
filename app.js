@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'V18';
+const FRONTEND_VERSION = 'V21';
 let APP_CONFIG = null;
 let GAS_URL = "";
 let allRecords = [];
@@ -80,15 +80,29 @@ function bindRepairTime() {
 }
 
 function calculateRepairMinutes(start, finish) {
-  if (!start || !finish) return null;
+  const parseHHMM = value => {
+    const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})$/);
+    if (!match) return null;
 
-  const [sh, sm] = start.split(":").map(Number);
-  const [fh, fm] = finish.split(":").map(Number);
+    const hour = Number(match[1]);
+    const minute = Number(match[2]);
 
-  if ([sh, sm, fh, fm].some(Number.isNaN)) return null;
+    if (
+      !Number.isInteger(hour) ||
+      !Number.isInteger(minute) ||
+      hour < 0 || hour > 23 ||
+      minute < 0 || minute > 59
+    ) {
+      return null;
+    }
 
-  const startMin = sh * 60 + sm;
-  let finishMin = fh * 60 + fm;
+    return hour * 60 + minute;
+  };
+
+  const startMin = parseHHMM(start);
+  let finishMin = parseHHMM(finish);
+
+  if (startMin === null || finishMin === null) return null;
 
   // ถ้าเวลาสิ้นสุดน้อยกว่าเวลาเริ่ม ถือว่าซ่อมข้ามเที่ยงคืน
   if (finishMin < startMin) finishMin += 24 * 60;
@@ -205,6 +219,9 @@ function bindImageModal() {
 }
 
 async function openImageModal(url, name, fileId) {
+  const modalImage = $("#modalImage");
+  modalImage.onerror = null;
+
   const id = normalizeDriveFileId(fileId) || extractDriveFileId(url);
   let resolvedUrl = id ? buildDriveThumbnailUrl(id) : String(url || "").trim();
 
@@ -227,15 +244,15 @@ async function openImageModal(url, name, fileId) {
   $("#imageModal").classList.remove("hidden");
   $("#imageModal").setAttribute("aria-hidden", "false");
 
-  $("#modalImage").src = resolvedUrl || "";
+  modalImage.src = resolvedUrl || "";
 
   if (id) {
-    $("#modalImage").onerror = async () => {
-      $("#modalImage").onerror = null;
+    modalImage.onerror = async () => {
+      modalImage.onerror = null;
 
       try {
         const dataUrl = await getDriveImageData(id);
-        $("#modalImage").src = dataUrl;
+        modalImage.src = dataUrl;
       } catch (err) {
         console.error(err);
         toast("โหลดรูปไม่ได้ กรุณาตรวจ Image File ID / Drive permission", "error");
@@ -247,7 +264,10 @@ async function openImageModal(url, name, fileId) {
 function closeImageModal() {
   $("#imageModal").classList.add("hidden");
   $("#imageModal").setAttribute("aria-hidden", "true");
-  $("#modalImage").removeAttribute("src");
+
+  const modalImage = $("#modalImage");
+  modalImage.onerror = null;
+  modalImage.removeAttribute("src");
 }
 
 
@@ -476,38 +496,56 @@ function bindHistory() {
 function jsonp(action, extra = {}) {
   return new Promise((resolve, reject) => {
     const callbackName =
-      "__repair_cb_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
+      "__repair_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1000000);
 
     const script = document.createElement("script");
+    script.async = true;
+
     const params = new URLSearchParams({
       action,
       callback: callbackName,
       ...extra
     });
 
+    let settled = false;
+
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(new Error("Request timeout"));
+      reject(new Error(`Request timeout: ${action}`));
     }, 15000);
 
     function cleanup() {
       clearTimeout(timer);
-      delete window[callbackName];
-      script.remove();
+
+      try {
+        delete window[callbackName];
+      } catch (_) {
+        window[callbackName] = undefined;
+      }
+
+      if (script.parentNode) {
+        script.parentNode.removeChild(script);
+      }
     }
 
-    window[callbackName] = (data) => {
+    window[callbackName] = data => {
+      if (settled) return;
+      settled = true;
       cleanup();
       resolve(data);
     };
 
     script.onerror = () => {
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(new Error("JSONP request failed"));
+      reject(new Error(`JSONP request failed: ${action}`));
     };
 
     script.src = GAS_URL + "?" + params.toString();
-    document.body.appendChild(script);
+    document.head.appendChild(script);
   });
 }
 
@@ -517,7 +555,11 @@ async function loadModels() {
 
     if (!res.ok) throw new Error(res.error || "โหลด Model ไม่สำเร็จ");
 
-    const models = Array.isArray(res.models) ? res.models : [];
+    const models = uniqueSorted(
+      (Array.isArray(res.models) ? res.models : [])
+        .map(v => String(v || "").trim())
+        .filter(Boolean)
+    );
 
     $("#modelOptions").innerHTML =
       models.map(m => `<option value="${escAttr(m)}"></option>`).join("");
@@ -559,6 +601,7 @@ async function loadHistory() {
     if (!res.ok) throw new Error(res.error || "โหลดข้อมูลไม่สำเร็จ");
 
     allRecords = Array.isArray(res.records) ? res.records : [];
+    syncHistoryModelFilterFromRecords();
     renderHistory();
     initializeDashboardOptions();
     renderDashboard();
@@ -581,7 +624,35 @@ async function loadHistory() {
 }
 
 
-let refreshInProgress = false;
+
+function syncHistoryModelFilterFromRecords() {
+  const select = $("#filterModel");
+  if (!select) return;
+
+  const current = select.value;
+
+  const existing = Array.from(select.options)
+    .map(option => String(option.value || "").trim())
+    .filter(Boolean);
+
+  const fromRecords = allRecords
+    .map(record => String(record.model || "").trim())
+    .filter(Boolean);
+
+  const models = uniqueSorted([...existing, ...fromRecords]);
+
+  select.innerHTML =
+    '<option value="">ทุก Model</option>' +
+    models
+      .map(model => `<option value="${escAttr(model)}">${esc(model)}</option>`)
+      .join("");
+
+  if (models.includes(current)) {
+    select.value = current;
+  }
+}
+
+let refreshPromise = null;
 
 async function refreshAllData(options = {}) {
   const { showToast = false } = options;
@@ -591,32 +662,37 @@ async function refreshAllData(options = {}) {
     return false;
   }
 
-  if (refreshInProgress) return false;
-
-  refreshInProgress = true;
-  setRefreshBusy(true);
-
-  try {
-    const [modelsOk, historyOk] = await Promise.all([
-      loadModels(),
-      loadHistory()
-    ]);
-
-    const ok = modelsOk !== false && historyOk !== false;
-
-    if (showToast) {
-      toast(
-        ok ? "รีเฟรชข้อมูลแล้ว" : "รีเฟรชข้อมูลไม่ครบ กรุณาลองอีกครั้ง",
-        ok ? "success" : "error"
-      );
-    }
-
-    return ok;
-
-  } finally {
-    refreshInProgress = false;
-    setRefreshBusy(false);
+  if (refreshPromise) {
+    return refreshPromise;
   }
+
+  refreshPromise = (async () => {
+    setRefreshBusy(true);
+
+    try {
+      // ทำตามลำดับเพื่อลด race:
+      // Master_Model ก่อน แล้วค่อย History ซึ่งจะ merge Model ที่มีจริงใน records
+      const modelsOk = await loadModels();
+      const historyOk = await loadHistory();
+
+      const ok = modelsOk !== false && historyOk !== false;
+
+      if (showToast) {
+        toast(
+          ok ? "รีเฟรชข้อมูลแล้ว" : "รีเฟรชข้อมูลไม่ครบ กรุณาลองอีกครั้ง",
+          ok ? "success" : "error"
+        );
+      }
+
+      return ok;
+
+    } finally {
+      setRefreshBusy(false);
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 function setRefreshBusy(busy) {
@@ -696,7 +772,7 @@ function renderHistory() {
 
   if (!filtered.length) {
     body.innerHTML =
-      '<tr><td colspan="12" class="empty">ไม่พบข้อมูล</td></tr>';
+      '<tr><td colspan="10" class="empty">ไม่พบข้อมูล</td></tr>';
   } else {
     body.innerHTML = filtered.map(r => {
       const image = resolveRecordImage(r);
@@ -714,18 +790,16 @@ function renderHistory() {
 
       return `
         <tr>
-          <td data-label="Repair ID"><strong>${esc(r.repairId)}</strong></td>
-          <td data-label="วันที่">${esc(r.date)}</td>
-          <td data-label="เวลา">${esc(r.time)}</td>
+          <td data-label="Failure / Symptom" class="history-failure-cell">${esc(r.failure)}</td>
+          <td data-label="Repair Action" class="history-action-cell">${esc(r.repairAction)}</td>
+          <td data-label="รูป" class="history-image-cell">${imageCell}</td>
           <td data-label="Model">${esc(r.model)}</td>
           <td data-label="Station">${esc(r.station)}</td>
-          <td data-label="Failure / Symptom">${esc(r.failure)}</td>
-          <td data-label="Repair Action">${esc(r.repairAction)}</td>
           <td data-label="เริ่มซ่อม">${esc(r.startRepair)}</td>
           <td data-label="ซ่อมเสร็จ">${esc(r.finishRepair)}</td>
           <td data-label="Repair Time (นาที)">${esc(r.repairTime)}</td>
           <td data-label="คนทำ">${esc(r.repairBy)}</td>
-          <td data-label="รูป">${imageCell}</td>
+          <td data-label="Repair ID" class="history-id-cell"><strong>${esc(r.repairId)}</strong></td>
         </tr>
       `;
     }).join("");
@@ -914,7 +988,10 @@ function renderDashboardKpis(records) {
 }
 
 function renderTopFailures(records) {
-  const limit = Number($("#topFailureCount").value || 5);
+  const requestedLimit = Number($("#topFailureCount").value || 5);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(99, Math.max(0, Math.trunc(requestedLimit)))
+    : 5;
 
   const allGroups = aggregateFailures(records)
     .sort((a, b) => b.count - a.count || a.failure.localeCompare(b.failure));
@@ -989,22 +1066,25 @@ function aggregateFailures(records) {
   const map = new Map();
 
   records.forEach(r => {
-    const failure = normalizeFailure(r.failure);
-    if (!failure) return;
+    const displayFailure = normalizeFailure(r.failure);
+    if (!displayFailure) return;
 
-    if (!map.has(failure)) {
-      map.set(failure, {
-        failure,
+    const key = displayFailure.toLocaleLowerCase();
+
+    if (!map.has(key)) {
+      map.set(key, {
+        failure: displayFailure,
         count: 0,
         totalRepairTime: 0,
         repairTimeCount: 0
       });
     }
 
-    const item = map.get(failure);
+    const item = map.get(key);
     item.count += 1;
 
     const time = Number(r.repairTime);
+
     if (Number.isFinite(time) && time >= 0) {
       item.totalRepairTime += time;
       item.repairTimeCount += 1;
@@ -1041,6 +1121,8 @@ function renderTimeline(records) {
 
     if (type === "day") {
       const hour = parseRecordHour(r.time);
+      if (hour === null) return;
+
       key = String(hour).padStart(2, "0");
       label = `${String(hour).padStart(2, "0")}:00`;
     } else if (type === "week") {
@@ -1153,37 +1235,68 @@ function buildHourlyTimeline(groups) {
 }
 
 function parseRecordHour(value) {
-  const match = String(value || "").match(/^(\d{1,2}):/);
-  if (!match) return 0;
+  const match = String(value || "").trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (!match) return null;
 
   const hour = Number(match[1]);
-  return Number.isFinite(hour) && hour >= 0 && hour <= 23 ? hour : 0;
+  const minute = Number(match[2]);
+
+  if (
+    !Number.isInteger(hour) ||
+    !Number.isInteger(minute) ||
+    hour < 0 || hour > 23 ||
+    minute < 0 || minute > 59
+  ) {
+    return null;
+  }
+
+  return hour;
 }
 
 function parseRepairDate(value) {
   const text = String(value || "").trim();
 
+  function buildStrictDate(year, month1Based, day) {
+    const date = new Date(year, month1Based - 1, day, 12, 0, 0);
+
+    if (
+      date.getFullYear() !== year ||
+      date.getMonth() !== month1Based - 1 ||
+      date.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return date;
+  }
+
   // dd/MM/yyyy
   let m = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+
   if (m) {
     const day = Number(m[1]);
-    const month = Number(m[2]) - 1;
+    const month = Number(m[2]);
     let year = Number(m[3]);
 
-    // รองรับ พ.ศ. ถ้ามีข้อมูลเก่าในรูปแบบไทย
+    // รองรับ พ.ศ.
     if (year > 2400) year -= 543;
 
-    return new Date(year, month, day, 12, 0, 0);
+    return buildStrictDate(year, month, day);
   }
 
   // yyyy-MM-dd
   m = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
   if (m) {
-    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+    return buildStrictDate(
+      Number(m[1]),
+      Number(m[2]),
+      Number(m[3])
+    );
   }
 
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
+  // ไม่ parse format อื่นแบบเดา เพื่อไม่ให้ Dashboard นับวันที่ผิด
+  return null;
 }
 
 function toDateInputValue(date) {
@@ -1314,11 +1427,11 @@ async function checkAdminBackendVersion() {
       };
     }
 
-    if (version !== "V18") {
+    if (version !== "V20") {
       return {
         ok: false,
         error:
-          `Frontend V18 แต่ Apps Script ยังเป็น ${version || "เวอร์ชันเก่า"} ` +
+          `Frontend V21 ใช้กับ Apps Script V20 แต่ Backend ตอนนี้เป็น ${version || "เวอร์ชันเก่า"} ` +
           `กรุณา Deploy → Manage deployments → Edit → New version → Deploy`
       };
     }
@@ -1362,7 +1475,7 @@ async function pollOperationStatus(opId) {
 
     if (status && status.error && /Unknown action/i.test(status.error)) {
       throw new Error(
-        "Apps Script ที่ใช้อยู่ยังไม่ใช่ V18 กรุณา Deploy New version"
+        "Apps Script ที่ใช้อยู่ยังไม่ใช่ V20 กรุณา Deploy New version"
       );
     }
 
@@ -1577,6 +1690,19 @@ function clearAdminEditor() {
   $("#adminSaveEditBtn").disabled = true;
 }
 
+
+function normalizeComparableText(value) {
+  return String(value ?? "").trim();
+}
+
+function recordMatchesExpected(record, expected) {
+  if (!record) return false;
+
+  return Object.entries(expected).every(([key, value]) =>
+    normalizeComparableText(record[key]) === normalizeComparableText(value)
+  );
+}
+
 async function saveAdminEdit(e) {
   e.preventDefault();
 
@@ -1598,8 +1724,7 @@ async function saveAdminEdit(e) {
   btn.textContent = "กำลังบันทึก...";
 
   try {
-    await sendAdminOperation("adminUpdate", {
-      repairId: adminSelectedRepairId,
+    const expected = {
       date: $("#adminEditDate").value.trim(),
       time: $("#adminEditTime").value.trim(),
       model: $("#adminEditModel").value.trim(),
@@ -1608,13 +1733,19 @@ async function saveAdminEdit(e) {
       repairAction: $("#adminEditRepairAction").value.trim(),
       startRepair: start,
       finishRepair: finish,
-      repairBy: $("#adminEditRepairBy").value.trim(),
+      repairBy: $("#adminEditRepairBy").value.trim()
+    };
+
+    await sendAdminOperation("adminUpdate", {
+      repairId: adminSelectedRepairId,
+      ...expected,
       removeImage: $("#adminRemoveImage").checked ? "true" : "false"
     });
 
     const updated = await waitForRecordState(
       adminSelectedRepairId,
-      record => Boolean(record)
+      record => recordMatchesExpected(record, expected),
+      7
     );
 
     if (updated) {
@@ -1643,7 +1774,7 @@ async function normalizeAllAdminRecords() {
     "ระบบจะอ่านแต่ละแถวก่อน แล้วเขียนกลับเป็น:\n" +
     "Repair ID / วันที่ / เวลา / Model / Station / Failure / Repair Action / " +
     "เริ่มซ่อม / ซ่อมเสร็จ / Repair Time / คนทำ / Image File ID / Image URL / Image Name\n\n" +
-    "แนะนำให้ทำครั้งเดียวหลังอัปเดต V15"
+    "แนะนำให้ทำครั้งเดียวหลังอัปเดต V20"
   );
 
   if (!confirmed) return;

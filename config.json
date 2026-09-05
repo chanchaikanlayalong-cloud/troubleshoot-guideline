@@ -1,5 +1,5 @@
 {
-  "APP_NAME": "TE_CDBU4_troubleshoot guideline",
-  "GAS_URL": "https://script.google.com/macros/s/AKfycbyP2MTTtanJaTtGpveUAwbfEroySGMSOouT_EwjU4_GzRHxEe_NF4S4ZeFsF75gC8LOoQ/exec",
-  "DEFAULT_STATION": "PMC&Shelf"
+  "APP_NAME": "ATS1 Repair Record",
+  "GAS_URL": "https://script.google.com/macros/s/AKfycbxfa2ab8bhYd560qgbP_W5iOkUt3X-KFmYE3hFQnovGVqqwRAHlf_DRP7RgcWKgPD6_8A/exec",
+  "DEFAULT_STATION": "ATS1"
 }

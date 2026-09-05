@@ -672,3 +672,127 @@ GAS_URL?action=health
   "apiVersion": "V18"
 }
 ```
+
+
+---
+
+# Version 19 — Dashboard Responsive Layout
+
+V19 ปรับเฉพาะ Frontend Dashboard
+Backend ยังใช้ Apps Script V18
+
+## Desktop / Notebook
+
+- Filter 6 ช่องในแถวเดียวเมื่อพื้นที่พอ
+- KPI 4 ช่องในแถวเดียว
+- Top Failure และ Timeline วางซ้าย/ขวา
+- Failure Ranking เต็มความกว้างด้านล่าง
+
+## Mobile Portrait
+
+- Header และ Tabs ลดความสูง
+- Filter 1 คอลัมน์
+- KPI แบบ 2x2
+- Top Failure เต็มความกว้าง
+- Timeline เต็มความกว้างและเลื่อนซ้าย/ขวาได้
+- Ranking เป็นตารางแนวนอนเลื่อนซ้าย/ขวา
+
+## Mobile Landscape
+
+- Filter 3 คอลัมน์
+- KPI 4 ช่องในแถวเดียว
+- Top Failure ด้านซ้าย
+- Timeline ด้านขวา
+- ใช้ความสูงหน้าจอน้อยลง
+
+## Deploy
+
+อัปเดตเฉพาะ Frontend:
+
+- index.html
+- style.css
+- app.js
+- config.json
+
+Apps Script Backend V18 ใช้ตัวเดิมได้
+
+
+---
+
+# Version 20 — Reviewed & Hardened
+
+V20 ทำ Code Review ทั้ง Frontend และ Apps Script
+
+การเปลี่ยนแปลงหลัก:
+
+- แก้ Refresh race condition
+- Admin Edit รอค่าที่แก้จริง ไม่ใช่แค่ Repair ID ยังอยู่
+- Canonical A:N อ่านตรง ไม่ใช้ heuristic
+- เวลา HH:mm ตรวจ range จริง
+- Admin ตรวจ Date / Record Time
+- Dashboard ไม่รับ Invalid Date แบบ rollover
+- Invalid record time ไม่ถูกนับเป็น 00:00
+- Top Failure รวมตัวพิมพ์เล็ก/ใหญ่
+- Repair Time เขียนลง Sheet เป็นตัวเลข
+- Save ล้มหลัง Upload รูป → ลบ orphan image
+- Remove Image → Commit Sheet ก่อน Trash Drive
+- Reject Duplicate Repair ID
+- Normalize All ตรวจ Duplicate ก่อนเขียนทับ
+- Health check ไม่สร้าง Drive folder
+- Model dropdown de-duplicate
+- History Model filter รวม Model จากข้อมูลจริง
+- เพิ่ม `runSelfTest()` ใน setup.gs
+- เพิ่ม `CODE_REVIEW_V20.md`
+
+Frontend และ Apps Script ต้องเป็น V20 ทั้งคู่
+
+
+---
+
+# Version 21 — User-first Repair History
+
+V21 ปรับเฉพาะ Frontend และใช้ Apps Script V20 เดิม
+
+## Repair History order
+
+แสดงเฉพาะข้อมูลที่ User ใช้ตรวจสอบบ่อย และเรียงเป็น:
+
+1. Failure / Symptom
+2. Repair Action
+3. รูป
+4. Model
+5. Station
+6. เริ่มซ่อม
+7. ซ่อมเสร็จ
+8. Repair Time (นาที)
+9. คนทำ
+10. Repair ID
+
+`วันที่` และ `เวลาบันทึก` ยังอยู่ในข้อมูล Backend และยังใช้ค้นหา /
+Dashboard ได้ แต่ไม่แสดงในตาราง History เพื่อประหยัดพื้นที่
+
+## Branding
+
+```html
+<title>Troubleshoot Guideline</title>
+<div class="eyebrow">TEST ENGINEERING · CDBU4</div>
+<h1>troubleshoot guideline</h1>
+<p>บันทึกและติดตามประวัติการซ่อมเครื่อง TE</p>
+```
+
+Admin note:
+
+```html
+<p class="admin-note">ใส่UserและPassword</p>
+```
+
+## Deploy
+
+อัปเดตเฉพาะ Frontend:
+
+- index.html
+- style.css
+- app.js
+- config.json
+
+Apps Script V20 ไม่ต้อง Deploy ใหม่
