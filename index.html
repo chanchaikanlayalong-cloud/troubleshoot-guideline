@@ -4,16 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
-  <title>Troubleshoot Guideline</title>
+  <title>ATS1 Repair Record</title>
   <link rel="stylesheet" href="style.css?v=21" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <div>
-        <div class="eyebrow">TEST ENGINEERING · CDBU4</div>
-        <h1>troubleshoot guideline</h1>
-        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง TE</p>
+        <div class="eyebrow">TEST ENGINEERING · PRODUCTION SUPPORT</div>
+        <h1>ATS1 Repair Record</h1>
+        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง ATS1 สำหรับ Production</p>
       </div>
       <div class="status" id="apiStatus">กำลังเชื่อมต่อ...</div>
     </div>
@@ -177,7 +177,7 @@
         </div>
 
         <div class="filters">
-          <input id="searchBox" placeholder="ค้นหา Failure / Repair Action / Model / Station / คนทำ / Repair ID..." />
+          <input id="searchBox" placeholder="ค้นหา Repair ID / Model / Station / Failure / Repair Action / คนทำ..." />
           <select id="filterModel">
             <option value="">ทุก Model</option>
           </select>
@@ -187,20 +187,22 @@
           <table>
             <thead>
               <tr>
-                <th>Failure / Symptom</th>
-                <th>Repair Action</th>
-                <th>รูป</th>
+                <th>Repair ID</th>
+                <th>วันที่</th>
+                <th>เวลา</th>
                 <th>Model</th>
                 <th>Station</th>
+                <th>Failure / Symptom</th>
+                <th>Repair Action</th>
                 <th>เริ่มซ่อม</th>
                 <th>ซ่อมเสร็จ</th>
                 <th>Repair Time (นาที)</th>
                 <th>คนทำ</th>
-                <th>Repair ID</th>
+                <th>รูป</th>
               </tr>
             </thead>
             <tbody id="historyBody">
-              <tr><td colspan="10" class="empty">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colspan="12" class="empty">ยังไม่มีข้อมูล</td></tr>
             </tbody>
           </table>
         </div>
@@ -231,7 +233,7 @@
           </div>
 
           <div class="dashboard-filters">
-            <label>
+            <label class="dash-filter dash-filter-period">
               <span>มุมมองเวลา</span>
               <select id="dashboardPeriodType">
                 <option value="all">ALL</option>
@@ -242,43 +244,43 @@
               </select>
             </label>
 
-            <label id="dashboardDayWrap" class="dashboard-date-control hidden">
+            <label id="dashboardDayWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
               <span>เลือกวันที่</span>
               <input type="date" id="dashboardDay" />
             </label>
 
-            <label id="dashboardWeekWrap" class="dashboard-date-control hidden">
+            <label id="dashboardWeekWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
               <span>เลือกสัปดาห์</span>
               <input type="week" id="dashboardWeek" />
             </label>
 
-            <label id="dashboardMonthWrap" class="dashboard-date-control">
+            <label id="dashboardMonthWrap" class="dashboard-date-control dash-filter dash-filter-date">
               <span>เลือกเดือน</span>
               <input type="month" id="dashboardMonth" />
             </label>
 
-            <label id="dashboardYearWrap" class="dashboard-date-control hidden">
+            <label id="dashboardYearWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
               <span>เลือกปี</span>
               <select id="dashboardYear">
                 <option value="">เลือกปี</option>
               </select>
             </label>
 
-            <label>
+            <label class="dash-filter dash-filter-model">
               <span>Model</span>
               <select id="dashboardModel">
                 <option value="">ทุก Model</option>
               </select>
             </label>
 
-            <label>
+            <label class="dash-filter dash-filter-station">
               <span>Station</span>
               <select id="dashboardStation">
                 <option value="">ทุก Station</option>
               </select>
             </label>
 
-            <label>
+            <label class="dash-filter dash-filter-top">
               <span>จำนวน Top Failure</span>
               <select id="topFailureCount">
                 <option value="0">0</option>
@@ -489,7 +491,7 @@
           </label>
           <button class="btn primary" type="submit">เข้าสู่ระบบ</button>
         </form>
-        <p class="admin-note">ใส่UserและPassword</p>
+        <p class="admin-note">User ใช้ชื่ออะไรก็ได้ · Password ตรวจสอบก่อนเปิดหน้า Admin</p>
       </div>
 
       <div id="adminWorkspace" class="admin-workspace hidden">

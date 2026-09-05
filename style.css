@@ -2288,156 +2288,339 @@ button:disabled {
 }
 
 
-/* V20 reviewed behavior */
-.btn[disabled],
-button[disabled] {
-  opacity: .65;
-  cursor: wait;
+/* ============================================================
+   V20 — HARD MOBILE CONTAINMENT + PORTRAIT DASHBOARD REDESIGN
+============================================================ */
+
+/* Prevent any dashboard child from increasing the page width */
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
-#lastRefreshText {
-  white-space: nowrap;
+.dashboard-page,
+.dashboard-page *,
+.dashboard-page *::before,
+.dashboard-page *::after {
+  box-sizing: border-box;
+}
+
+.dashboard-page,
+.dashboard-page .dashboard-grid,
+.dashboard-page .dashboard-filter-card,
+.dashboard-page .dashboard-kpis,
+.dashboard-page .dashboard-panel,
+.dashboard-page .dashboard-filters,
+.dashboard-page .dash-filter,
+.dashboard-page .kpi-card,
+.dashboard-page .failure-chart,
+.dashboard-page .timeline-chart,
+.dashboard-page .ranking-wrap {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+.dashboard-page input,
+.dashboard-page select,
+.dashboard-page textarea,
+.dashboard-page button {
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+
+/* iOS month/week/date controls have large intrinsic widths unless explicitly contained */
+.dashboard-page input[type="date"],
+.dashboard-page input[type="week"],
+.dashboard-page input[type="month"],
+.dashboard-page input[type="time"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
 }
 
 
 /* ============================================================
-   V21 USER-FIRST REPAIR HISTORY
-   Display order:
-   Failure → Repair Action → Image → Model → Station →
-   Start → Finish → Repair Time → Owner → Repair ID
+   MOBILE PORTRAIT
 ============================================================ */
+@media screen and (max-width: 767px) and (orientation: portrait) {
 
-.history-card table {
-  min-width: 1180px;
-}
-
-.history-card th:nth-child(1),
-.history-card td:nth-child(1) {
-  min-width: 220px;
-}
-
-.history-card th:nth-child(2),
-.history-card td:nth-child(2) {
-  min-width: 260px;
-}
-
-.history-card th:nth-child(3),
-.history-card td:nth-child(3) {
-  min-width: 90px;
-  text-align: center;
-}
-
-.history-card th:nth-child(4),
-.history-card td:nth-child(4) {
-  min-width: 135px;
-}
-
-.history-card th:nth-child(5),
-.history-card td:nth-child(5) {
-  min-width: 100px;
-}
-
-.history-card th:nth-child(6),
-.history-card td:nth-child(6),
-.history-card th:nth-child(7),
-.history-card td:nth-child(7) {
-  min-width: 100px;
-  white-space: nowrap;
-}
-
-.history-card th:nth-child(8),
-.history-card td:nth-child(8) {
-  min-width: 135px;
-  white-space: nowrap;
-}
-
-.history-card th:nth-child(9),
-.history-card td:nth-child(9) {
-  min-width: 125px;
-}
-
-.history-card th:nth-child(10),
-.history-card td:nth-child(10) {
-  min-width: 175px;
-  white-space: nowrap;
-}
-
-.history-failure-cell,
-.history-action-cell {
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-}
-
-.history-id-cell {
-  font-size: 12px;
-}
-
-.history-image-cell .history-thumb {
-  width: 76px;
-  height: 58px;
-}
-
-/* The most useful field remains visible while swiping on mobile. */
-@media screen and (max-width: 820px) {
-  .history-card table {
-    min-width: 1180px !important;
+  body {
+    overflow-x: hidden !important;
   }
 
-  .history-card th:first-child,
-  .history-card td:first-child {
-    min-width: 210px !important;
+  .container {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin-left: auto !important;
+    margin-right: auto !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
   }
 
-  /* Override historical nth-child rules from earlier versions. */
-  .history-card th:nth-child(1),
-  .history-card td:nth-child(1) {
-    min-width: 210px !important;
+  #dashboardPage {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
   }
 
-  .history-card th:nth-child(2),
-  .history-card td:nth-child(2) {
-    min-width: 245px !important;
+  /* Dashboard card must never be wider than viewport */
+  .dashboard-page .dashboard-grid {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 10px !important;
   }
 
-  .history-card th:nth-child(3),
-  .history-card td:nth-child(3) {
-    min-width: 86px !important;
+  .dashboard-page .dashboard-filter-card,
+  .dashboard-page .dashboard-kpis,
+  .dashboard-page .dashboard-panel,
+  .dashboard-page .dashboard-panel.full-span {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-column: 1 !important;
   }
 
-  .history-card th:nth-child(4),
-  .history-card td:nth-child(4) {
-    min-width: 125px !important;
+  /* Header compact and contained */
+  .dashboard-page .dashboard-head {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
   }
 
-  .history-card th:nth-child(5),
-  .history-card td:nth-child(5) {
-    min-width: 95px !important;
+  .dashboard-page .dashboard-head > div {
+    min-width: 0 !important;
   }
 
-  .history-card th:nth-child(6),
-  .history-card td:nth-child(6),
-  .history-card th:nth-child(7),
-  .history-card td:nth-child(7) {
-    min-width: 95px !important;
+  .dashboard-page .dashboard-head h2 {
+    font-size: 21px !important;
+    line-height: 1.15 !important;
+    overflow-wrap: anywhere;
   }
 
-  .history-card th:nth-child(8),
-  .history-card td:nth-child(8) {
-    min-width: 130px !important;
+  .dashboard-page .dashboard-head p {
+    max-width: 100% !important;
+    font-size: 11px !important;
+    overflow-wrap: anywhere;
   }
 
-  .history-card th:nth-child(9),
-  .history-card td:nth-child(9) {
-    min-width: 120px !important;
+  .dashboard-page #dashboardRefreshBtn {
+    min-width: 74px !important;
+    max-width: 84px !important;
+    min-height: 36px !important;
+    padding: 7px 8px !important;
+    font-size: 10px !important;
   }
 
-  .history-card th:nth-child(10),
-  .history-card td:nth-child(10) {
-    min-width: 170px !important;
+  /*
+   * Filters:
+   * Row 1 = Time view + selected date/week/month/year
+   * Row 2 = Model + Station
+   * Row 3 = Top Failure full width
+   */
+  .dashboard-page .dashboard-filters {
+    display: grid !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 9px !important;
+    align-items: end !important;
+  }
+
+  .dashboard-page .dash-filter {
+    width: 100% !important;
+    min-width: 0 !important;
+  }
+
+  .dashboard-page .dash-filter-period,
+  .dashboard-page .dash-filter-date,
+  .dashboard-page .dash-filter-model,
+  .dashboard-page .dash-filter-station {
+    grid-column: span 1 !important;
+  }
+
+  .dashboard-page .dash-filter-top {
+    grid-column: 1 / -1 !important;
+  }
+
+  .dashboard-page .dashboard-filters label > span:first-child {
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+  }
+
+  .dashboard-page .dashboard-filters input,
+  .dashboard-page .dashboard-filters select {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    min-height: 42px !important;
+    height: 42px !important;
+    padding: 8px 9px !important;
+    font-size: 14px !important;
+    text-overflow: ellipsis !important;
+  }
+
+  /* KPI 2x2, strictly inside viewport */
+  .dashboard-page .dashboard-kpis {
+    width: 100% !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  .dashboard-page .kpi-card {
+    width: 100% !important;
+    min-width: 0 !important;
+    min-height: 100px !important;
+    padding: 12px !important;
+    overflow: hidden !important;
+  }
+
+  .dashboard-page .kpi-label,
+  .dashboard-page .kpi-note,
+  .dashboard-page .kpi-card strong {
+    max-width: 100% !important;
+    overflow-wrap: anywhere !important;
+  }
+
+  .dashboard-page .kpi-label {
+    font-size: 9px !important;
+    letter-spacing: .025em !important;
+  }
+
+  .dashboard-page .kpi-card strong {
+    font-size: 26px !important;
+    white-space: nowrap !important;
+  }
+
+  .dashboard-page .kpi-card strong small {
+    font-size: 11px !important;
+  }
+
+  .dashboard-page .kpi-note {
+    font-size: 9px !important;
+    line-height: 1.25 !important;
+  }
+
+  /* Top Failure: text must not push card wider */
+  .dashboard-page .failure-bar-row,
+  .dashboard-page .failure-bar-content,
+  .dashboard-page .failure-bar-head {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .dashboard-page .failure-bar-head {
+    align-items: flex-start !important;
+  }
+
+  .dashboard-page .failure-name {
+    min-width: 0 !important;
+    max-width: calc(100% - 34px) !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  /* Timeline scroll happens inside panel only */
+  .dashboard-page .timeline-chart {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    overscroll-behavior-x: contain !important;
+  }
+
+  .dashboard-page .timeline-bars {
+    width: max-content !important;
+    max-width: none !important;
+  }
+
+  /* Ranking can scroll inside its own card but never increase body width */
+  .dashboard-page .ranking-wrap {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+  }
+
+  .dashboard-page .ranking-table {
+    width: 660px !important;
+    min-width: 660px !important;
+    max-width: none !important;
   }
 }
 
-/* Header identity requested for Troubleshoot Guideline */
-.topbar h1 {
-  text-transform: none;
+
+/* Narrow phones: use single-column KPI to avoid cramped cards */
+@media screen and (max-width: 374px) and (orientation: portrait) {
+  .dashboard-page .dashboard-filters {
+    grid-template-columns: 1fr !important;
+  }
+
+  .dashboard-page .dash-filter-period,
+  .dashboard-page .dash-filter-date,
+  .dashboard-page .dash-filter-model,
+  .dashboard-page .dash-filter-station,
+  .dashboard-page .dash-filter-top {
+    grid-column: 1 !important;
+  }
+
+  .dashboard-page .dashboard-kpis {
+    grid-template-columns: 1fr !important;
+  }
+
+  .dashboard-page .kpi-card {
+    min-height: 86px !important;
+  }
+}
+
+
+/* Medium portrait phones: tighter spacing */
+@media screen and (min-width: 375px) and (max-width: 430px) and (orientation: portrait) {
+  .dashboard-page .dashboard-filter-card {
+    padding: 12px !important;
+  }
+
+  .dashboard-page .dashboard-filters {
+    gap: 8px !important;
+  }
+}
+
+
+/* ============================================================
+   MOBILE LANDSCAPE — CONTAINMENT
+============================================================ */
+@media screen and (max-height: 520px) and (orientation: landscape) {
+
+  body,
+  .container,
+  #dashboardPage,
+  .dashboard-page .dashboard-grid {
+    max-width: 100% !important;
+    overflow-x: hidden !important;
+  }
+
+  .dashboard-page .dashboard-filters {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .dashboard-page .dash-filter {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .dashboard-page .dashboard-kpis {
+    width: 100% !important;
+    max-width: 100% !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+
+  .dashboard-page .dashboard-panel {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
 }
