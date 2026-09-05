@@ -1,5 +1,5 @@
 /**
- * setup.gs V20
+ * setup.gs V22.2
  * ไม่เพิ่ม/ลบ Column
  * ตรวจ Sheet และแก้ Header A:N ให้ตรงมาตรฐาน
  */
@@ -42,10 +42,17 @@ function setupSheets() {
 
   master.setFrozenRows(1);
 
+  const guideSheet = ensureFailureGuideSheet_(ss);
+  const summarySheet = ensureFailureSummarySheet_(ss);
+  const summary = syncFailureSummary_();
+
   const folder = getImageFolder_();
 
   Logger.log('API Version: ' + API_VERSION);
   Logger.log('Repair_Log Header OK');
+  Logger.log('Failure_Guide ready: ' + guideSheet.getName());
+  Logger.log('Failure_Summary ready: ' + summarySheet.getName());
+  Logger.log('Failure Summary rows: ' + summary.length);
   Logger.log('Image Folder URL: ' + folder.getUrl());
   Logger.log('Image Folder ID: ' + folder.getId());
   Logger.log('Setup completed successfully');
@@ -68,7 +75,7 @@ function showRepairImageFolder() {
 
 
 /**
- * V20 Self Test
+ * V22.2 Self Test
  * ไม่แก้ข้อมูลใน Sheet
  */
 function runSelfTest() {
@@ -118,5 +125,5 @@ function runSelfTest() {
     );
   }
 
-  Logger.log('V20 Self Test: PASS');
+  Logger.log('V22.2 Self Test: PASS');
 }

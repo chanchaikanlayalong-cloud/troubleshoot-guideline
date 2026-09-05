@@ -4,16 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
-  <title>ATS1 Repair Record</title>
-  <link rel="stylesheet" href="style.css?v=21" />
+  <title>Troubleshoot Guideline</title>
+  <link rel="stylesheet" href="style.css?v=22.3" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <div>
-        <div class="eyebrow">TEST ENGINEERING · PRODUCTION SUPPORT</div>
-        <h1>ATS1 Repair Record</h1>
-        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง ATS1 สำหรับ Production</p>
+        <div class="eyebrow">TEST ENGINEERING · CDBU4</div>
+        <h1>troubleshoot guideline</h1>
+        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง TE</p>
       </div>
       <div class="status" id="apiStatus">กำลังเชื่อมต่อ...</div>
     </div>
@@ -173,36 +173,62 @@
             <h2>Repair History</h2>
             <p>ข้อมูลจาก Google Sheet และรูปจาก Google Drive</p>
           </div>
-          <button class="btn ghost" id="refreshBtn">รีเฟรช</button>
+
+          <div class="history-head-actions">
+            <button
+              class="btn excel"
+              id="exportHistoryExcelBtn"
+              type="button"
+              title="Export เฉพาะข้อมูล History ตาม Search และ Model Filter ปัจจุบัน"
+            >
+              Excel History
+            </button>
+
+            <button
+              class="btn excel secondary"
+              id="exportFailureGuideExcelBtn"
+              type="button"
+              title="Export วิธีแก้ไขแบบละเอียดทั้งหมดที่เคยบันทึก"
+            >
+              Excel วิธีแก้ละเอียด
+            </button>
+
+            <button class="btn ghost" id="refreshBtn" type="button">
+              รีเฟรช
+            </button>
+          </div>
         </div>
 
         <div class="filters">
-          <input id="searchBox" placeholder="ค้นหา Repair ID / Model / Station / Failure / Repair Action / คนทำ..." />
+          <input id="searchBox" placeholder="ค้นหา Failure / Repair Action / Model / Station / คนทำ / Repair ID..." />
           <select id="filterModel">
             <option value="">ทุก Model</option>
           </select>
+        </div>
+
+        <div class="history-export-note">
+          Excel History จะ Export ตาม Search และ Model Filter ที่กำลังเลือกอยู่
+          · ลำดับข้อมูลใหม่สุดก่อน
         </div>
 
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>Repair ID</th>
-                <th>วันที่</th>
-                <th>เวลา</th>
-                <th>Model</th>
-                <th>Station</th>
                 <th>Failure / Symptom</th>
                 <th>Repair Action</th>
+                <th>รูป</th>
+                <th>Model</th>
+                <th>Station</th>
                 <th>เริ่มซ่อม</th>
                 <th>ซ่อมเสร็จ</th>
                 <th>Repair Time (นาที)</th>
                 <th>คนทำ</th>
-                <th>รูป</th>
+                <th>Repair ID</th>
               </tr>
             </thead>
             <tbody id="historyBody">
-              <tr><td colspan="12" class="empty">ยังไม่มีข้อมูล</td></tr>
+              <tr><td colspan="10" class="empty">ยังไม่มีข้อมูล</td></tr>
             </tbody>
           </table>
         </div>
@@ -233,7 +259,7 @@
           </div>
 
           <div class="dashboard-filters">
-            <label class="dash-filter dash-filter-period">
+            <label class="dash-control dash-period">
               <span>มุมมองเวลา</span>
               <select id="dashboardPeriodType">
                 <option value="all">ALL</option>
@@ -244,43 +270,43 @@
               </select>
             </label>
 
-            <label id="dashboardDayWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
+            <label id="dashboardDayWrap" class="dashboard-date-control dash-control dash-date hidden">
               <span>เลือกวันที่</span>
               <input type="date" id="dashboardDay" />
             </label>
 
-            <label id="dashboardWeekWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
+            <label id="dashboardWeekWrap" class="dashboard-date-control dash-control dash-date hidden">
               <span>เลือกสัปดาห์</span>
               <input type="week" id="dashboardWeek" />
             </label>
 
-            <label id="dashboardMonthWrap" class="dashboard-date-control dash-filter dash-filter-date">
+            <label id="dashboardMonthWrap" class="dashboard-date-control dash-control dash-date">
               <span>เลือกเดือน</span>
               <input type="month" id="dashboardMonth" />
             </label>
 
-            <label id="dashboardYearWrap" class="dashboard-date-control dash-filter dash-filter-date hidden">
+            <label id="dashboardYearWrap" class="dashboard-date-control dash-control dash-date hidden">
               <span>เลือกปี</span>
               <select id="dashboardYear">
                 <option value="">เลือกปี</option>
               </select>
             </label>
 
-            <label class="dash-filter dash-filter-model">
+            <label class="dash-control dash-model">
               <span>Model</span>
               <select id="dashboardModel">
                 <option value="">ทุก Model</option>
               </select>
             </label>
 
-            <label class="dash-filter dash-filter-station">
+            <label class="dash-control dash-station">
               <span>Station</span>
               <select id="dashboardStation">
                 <option value="">ทุก Station</option>
               </select>
             </label>
 
-            <label class="dash-filter dash-filter-top">
+            <label class="dash-control dash-top-count">
               <span>จำนวน Top Failure</span>
               <select id="topFailureCount">
                 <option value="0">0</option>
@@ -491,7 +517,7 @@
           </label>
           <button class="btn primary" type="submit">เข้าสู่ระบบ</button>
         </form>
-        <p class="admin-note">User ใช้ชื่ออะไรก็ได้ · Password ตรวจสอบก่อนเปิดหน้า Admin</p>
+        <p class="admin-note">ใส่UserและPassword</p>
       </div>
 
       <div id="adminWorkspace" class="admin-workspace hidden">
@@ -620,11 +646,247 @@
               </div>
             </form>
           </div>
+
+        </div>
+
+        <div class="card admin-toolbar-card admin-guide-toolbar">
+          <div class="admin-toolbar">
+            <div>
+              <h2>Detailed Failure Guide Management</h2>
+              <p>แก้ไขหรือลบวิธีแก้ไขแบบละเอียดที่ผู้ใช้งานเพิ่มไว้</p>
+            </div>
+          </div>
+
+          <div class="admin-search-row">
+            <input
+              id="adminGuideSearchBox"
+              placeholder="ค้นหา Guide ID / Failure / วิธีแก้ / ผู้เพิ่ม..."
+            />
+            <button id="adminGuideReloadBtn" class="btn ghost" type="button">
+              รีเฟรช Guide
+            </button>
+          </div>
+        </div>
+
+        <div class="admin-layout admin-guide-layout">
+          <div class="card admin-list-card">
+            <div class="panel-head">
+              <div>
+                <h3>Failure Guides</h3>
+                <p id="adminGuideCount">0 รายการ</p>
+              </div>
+            </div>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table admin-guide-table">
+                <thead>
+                  <tr>
+                    <th>Guide ID</th>
+                    <th>Failure / Symptom</th>
+                    <th>วิธีแก้ไขแบบละเอียด</th>
+                    <th>ผู้เพิ่ม</th>
+                    <th>วันที่</th>
+                    <th>จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody id="adminGuideTableBody">
+                  <tr>
+                    <td colspan="6" class="empty">
+                      เข้าสู่ระบบเพื่อจัดการ Failure Guide
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card admin-editor-card">
+            <div class="panel-head">
+              <div>
+                <h3>Edit Failure Guide</h3>
+                <p>เลือก Guide จากตารางด้านซ้าย</p>
+              </div>
+            </div>
+
+            <form id="adminGuideEditForm" class="admin-edit-form">
+              <label>
+                <span>Guide ID</span>
+                <input id="adminGuideEditId" disabled />
+              </label>
+
+              <label>
+                <span>Failure / Symptom</span>
+                <textarea id="adminGuideEditFailure" rows="2"></textarea>
+              </label>
+
+              <label>
+                <span>วิธีแก้ไขแบบละเอียด</span>
+                <textarea id="adminGuideEditDetail" rows="8"></textarea>
+              </label>
+
+              <label>
+                <span>ผู้เพิ่ม / คนทำ</span>
+                <input id="adminGuideEditAuthor" />
+              </label>
+
+              <div id="adminGuideCurrentImageWrap" class="admin-image-box hidden">
+                <span class="admin-image-title">รูปปัจจุบัน</span>
+                <img id="adminGuideCurrentImage" alt="Current failure guide image" />
+                <label class="admin-checkbox">
+                  <input type="checkbox" id="adminGuideRemoveImage" />
+                  <span>ลบรูปเดิมออกจาก Guide</span>
+                </label>
+              </div>
+
+              <label>
+                <span>เพิ่ม / เปลี่ยนรูป</span>
+                <input id="adminGuideNewImage" type="file" accept="image/*" />
+              </label>
+
+              <div id="adminGuideNewImagePreviewWrap" class="admin-image-box hidden">
+                <span class="admin-image-title">รูปใหม่</span>
+                <img id="adminGuideNewImagePreview" alt="New failure guide image" />
+                <button
+                  id="adminGuideClearNewImageBtn"
+                  class="btn ghost small"
+                  type="button"
+                >
+                  เอารูปใหม่ออก
+                </button>
+              </div>
+
+              <div class="admin-editor-actions">
+                <button
+                  id="adminGuideClearEditBtn"
+                  class="btn ghost"
+                  type="button"
+                >
+                  ยกเลิกการแก้ไข
+                </button>
+                <button
+                  id="adminGuideSaveEditBtn"
+                  class="btn primary"
+                  type="submit"
+                  disabled
+                >
+                  บันทึก Guide
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
     </section>
 
   </main>
+
+
+  <div id="failureDetailModal" class="failure-detail-modal hidden" aria-hidden="true">
+    <div id="failureDetailBackdrop" class="failure-detail-backdrop"></div>
+
+    <div class="failure-detail-card">
+      <div class="failure-detail-header">
+        <div>
+          <span class="failure-detail-eyebrow">FAILURE KNOWLEDGE</span>
+          <h2 id="failureDetailTitle">Failure / Symptom</h2>
+          <div class="failure-detail-stats">
+            <span id="failureDetailCount" class="failure-count-badge">0 ครั้ง</span>
+            <span id="failureGuideCount" class="failure-guide-count">0 วิธีแก้</span>
+          </div>
+        </div>
+
+        <button
+          id="closeFailureDetailModal"
+          class="failure-detail-close"
+          type="button"
+          aria-label="ปิด"
+        >
+          ×
+        </button>
+      </div>
+
+      <div class="failure-detail-body">
+        <div class="failure-guide-section-head">
+          <div>
+            <h3>วิธีแก้ไขแบบละเอียดที่เคยบันทึก</h3>
+            <p>แสดงทุกวิธีที่เคยเพิ่มสำหรับ Failure นี้</p>
+          </div>
+
+          <button
+            id="toggleFailureGuideFormBtn"
+            class="btn primary"
+            type="button"
+          >
+            + เพิ่มวิธีแก้ไขแบบละเอียด
+          </button>
+        </div>
+
+        <div id="failureGuideList" class="failure-guide-list">
+          <div class="failure-guide-empty">กำลังโหลดข้อมูล...</div>
+        </div>
+
+        <form id="failureGuideAddForm" class="failure-guide-add-form hidden">
+          <div class="failure-guide-form-title">
+            <h3>เพิ่มวิธีแก้ไขแบบละเอียด</h3>
+            <p id="failureGuideFormFailure"></p>
+          </div>
+
+          <label>
+            <span>วิธีแก้ไขแบบละเอียด *</span>
+            <textarea
+              id="failureGuideDetailInput"
+              rows="8"
+              maxlength="12000"
+              placeholder="ใส่ขั้นตอนตรวจสอบ / จุดวัด / ค่าที่คาดหวัง / วิธีซ่อม / วิธี Verify หลังซ่อม..."
+              required
+            ></textarea>
+          </label>
+
+          <label>
+            <span>ผู้เพิ่ม / คนทำ</span>
+            <input
+              id="failureGuideAuthorInput"
+              maxlength="120"
+              placeholder="เช่น MIN / Chanchai / TE"
+            />
+          </label>
+
+          <label>
+            <span>รูปประกอบ (ถ้ามี)</span>
+            <input id="failureGuideImageInput" type="file" accept="image/*" />
+          </label>
+
+          <div id="failureGuideImagePreviewWrap" class="guide-image-preview hidden">
+            <img id="failureGuideImagePreview" alt="Failure guide preview" />
+            <button
+              id="failureGuideRemoveImageBtn"
+              class="btn ghost small"
+              type="button"
+            >
+              เอารูปออก
+            </button>
+          </div>
+
+          <div class="failure-guide-form-actions">
+            <button
+              id="cancelFailureGuideBtn"
+              class="btn ghost"
+              type="button"
+            >
+              ยกเลิก
+            </button>
+            <button
+              id="saveFailureGuideBtn"
+              class="btn primary"
+              type="submit"
+            >
+              บันทึกวิธีแก้ไข
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
 
   <div id="imageModal" class="image-modal hidden" aria-hidden="true">
     <div class="image-modal-backdrop" id="imageModalBackdrop"></div>
@@ -637,6 +899,6 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=21"></script>
+  <script src="app.js?v=22.3"></script>
 </body>
 </html>

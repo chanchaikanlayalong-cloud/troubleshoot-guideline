@@ -796,3 +796,228 @@ Admin note:
 - config.json
 
 Apps Script V20 ไม่ต้อง Deploy ใหม่
+
+
+---
+
+# V22 — Failure Knowledge / Detailed Troubleshooting Guide
+
+V22 เพิ่มระบบ Knowledge สำหรับ Failure โดยคงฟังก์ชันเดิมทั้งหมดจาก V21
+
+## เมื่อคลิก Failure
+
+คลิกชื่อ Failure ได้จาก:
+- Repair History
+- Top Failure
+- Failure Ranking
+
+Popup จะแสดง:
+- Failure นี้เกิดทั้งหมดกี่ครั้ง
+- วิธีแก้ไขแบบละเอียดทุกวิธีที่เคยเพิ่ม
+- ผู้เพิ่ม
+- วันที่ / เวลา
+- รูปประกอบ
+- ปุ่มเพิ่มวิธีแก้ไขแบบละเอียด
+
+## Sheet ใหม่
+
+### Failure_Summary
+สร้างและ Sum อัตโนมัติจาก Repair_Log
+
+Columns:
+1. Failure Key
+2. Failure / Symptom
+3. Fail Count
+4. Last Seen
+5. Updated At
+
+### Failure_Guide
+เก็บวิธีแก้ไขแบบละเอียดแยกจาก Repair_Log
+
+Columns:
+1. Guide ID
+2. Failure Key
+3. Failure / Symptom
+4. วิธีแก้ไขแบบละเอียด
+5. ผู้เพิ่ม
+6. วันที่
+7. เวลา
+8. Image File ID
+9. Image URL
+10. Image Name
+11. Updated Date
+12. Updated Time
+
+## Admin
+
+หน้า Admin เดิมยังอยู่ครบ และเพิ่มส่วน:
+
+Detailed Failure Guide Management
+
+Admin สามารถ:
+- Search Guide
+- Edit Failure
+- Edit วิธีแก้ละเอียด
+- Edit ผู้เพิ่ม
+- ลบรูป
+- เปลี่ยนรูป
+- Delete Guide
+
+## สำคัญหลัง Update
+
+1. Replace Frontend:
+   - index.html
+   - style.css
+   - app.js
+   - config.json ใช้ของเดิมได้
+
+2. Replace Apps Script:
+   - Code.gs
+   - setup.gs
+
+3. Run `setupSheets()` 1 ครั้ง
+   - สร้าง Failure_Guide
+   - สร้าง Failure_Summary
+   - Sum ข้อมูล Fail เดิมจาก Repair_Log
+
+4. Deploy Apps Script:
+   Deploy → Manage deployments → Edit → New version → Deploy
+
+5. Health:
+   `GAS_URL?action=health`
+
+ต้องเห็น:
+`"apiVersion":"V22"`
+
+## ข้อมูลเดิม
+
+V22 ไม่ลบ Repair_Log เดิม
+ไม่ลบ Master_Model
+ไม่ลบ Admin เดิม
+ไม่ลบ Dashboard เดิม
+ไม่ลบระบบรูปเดิม
+
+Failure_Guide และ Failure_Summary เป็น Sheet เพิ่มใหม่
+
+
+---
+
+# V22.1 Reviewed
+
+V22.1 เป็น V22 ที่ผ่าน Code Review เพิ่มเติมและแก้ Bug โดยไม่ตัดฟังก์ชันเดิม
+
+แก้หลัก:
+- รูปขยายของ Failure Guide อยู่เหนือ Popup
+- Esc ปิดรูปก่อน ไม่ปิด 2 Popup พร้อมกัน
+- Failure_Summary sync พังจะไม่ทำให้ Repair_Log ที่บันทึกสำเร็จถูกแจ้งว่า Save Fail
+- เพิ่มเวลารอ Backend
+- Reset รูปใน Admin Guide ให้ถูกต้อง
+- ตรวจ Guide ID ซ้ำก่อน Edit/Delete
+
+Deploy Frontend + Apps Script ใหม่ และ Health ต้องเห็น:
+
+`"apiVersion":"V22.1"`
+
+
+---
+
+# V22.2 — History Order + API Alignment
+
+Repair History ล็อกลำดับ:
+
+1. Failure / Symptom
+2. Repair Action
+3. รูป
+4. Model
+5. Station
+6. เริ่มซ่อม
+7. ซ่อมเสร็จ
+8. Repair Time (นาที)
+9. คนทำ
+10. Repair ID
+
+เพิ่ม Frontend/API contract check และแก้ loading/error colspan เป็น 10.
+Repair_Log A:N เดิมไม่เปลี่ยน เพื่อไม่ให้ข้อมูลเก่าเลื่อน.
+
+
+---
+
+# V22.3 — Excel Export (Frontend Only)
+
+Backend ยังคง V22.2 และไม่ต้อง Deploy Apps Script ใหม่
+
+## Export History
+
+ปุ่ม:
+`Excel History`
+
+Export เฉพาะข้อมูลที่ตรงกับ:
+- Search ปัจจุบัน
+- Model Filter ปัจจุบัน
+
+ตัวอย่าง:
+- Search = `AC_OK`
+- Model = `ECD900020030`
+
+Excel จะมีเฉพาะ Record ที่ตรงทั้งสองเงื่อนไข
+
+History ไม่มีการ Sort ตาม Model
+`filterModel` เป็น Filter เท่านั้น
+
+ลำดับ History/Export:
+Record ใหม่สุดก่อน ตาม Backend
+
+Excel History ใช้ Column ตามหน้าเว็บ:
+1. Failure / Symptom
+2. Repair Action
+3. รูป
+4. Model
+5. Station
+6. เริ่มซ่อม
+7. ซ่อมเสร็จ
+8. Repair Time (นาที)
+9. คนทำ
+10. Repair ID
+
+Workbook มีอีก Sheet `Export Filter`
+เพื่อบอก Search, Model Filter, Sort และจำนวน Record ที่ Export
+
+## Export Detailed Failure Guide
+
+ปุ่ม:
+`Excel วิธีแก้ละเอียด`
+
+Export Failure_Guide ทุก Record ที่เคยบันทึก:
+- Guide ID
+- Failure / Symptom
+- Fail Count
+- วิธีแก้ไขแบบละเอียด
+- ผู้เพิ่ม
+- วันที่
+- เวลา
+- รูป / URL
+- Image Name
+- Updated Date
+- Updated Time
+
+Fail Count คิดจาก Repair History ทั้งหมด
+ไม่ขึ้นกับ Search/Model Filter ในหน้า History
+
+## Excel format
+
+ใช้ Excel XML `.xls` ที่สร้างจาก Browser โดยตรง
+ไม่ใช้ CDN และไม่ต้องติดตั้ง JavaScript Library เพิ่ม
+
+## Deploy
+
+อัปเดต Frontend:
+- index.html
+- style.css
+- app.js
+
+ไม่ต้องแก้:
+- Code.gs
+- setup.gs
+- config.json
+
+Backend ต้องคง `V22.2`

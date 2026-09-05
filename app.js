@@ -1,4 +1,33 @@
-const FRONTEND_VERSION = 'V21';
+const FRONTEND_VERSION = 'V22.3';
+const REQUIRED_BACKEND_VERSION = 'V22.2';
+
+const HISTORY_DISPLAY_ORDER = Object.freeze([
+  "failure",
+  "repairAction",
+  "image",
+  "model",
+  "station",
+  "startRepair",
+  "finishRepair",
+  "repairTime",
+  "repairBy",
+  "repairId"
+]);
+
+const HISTORY_RECORD_REQUIRED_FIELDS = Object.freeze([
+  "failure",
+  "repairAction",
+  "imageFileId",
+  "imageUrl",
+  "imageName",
+  "model",
+  "station",
+  "startRepair",
+  "finishRepair",
+  "repairTime",
+  "repairBy",
+  "repairId"
+]);
 let APP_CONFIG = null;
 let GAS_URL = "";
 let allRecords = [];
@@ -7,6 +36,11 @@ let adminLoggedIn = false;
 let adminSessionUser = "";
 let adminSessionPassword = "";
 let adminSelectedRepairId = "";
+let activeFailureName = "";
+let selectedFailureGuideImage = null;
+let allFailureGuides = [];
+let adminSelectedGuideId = "";
+let adminGuideNewImage = null;
 
 const $ = (s) => document.querySelector(s);
 
@@ -19,6 +53,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindHistory();
   bindDashboard();
   bindAdmin();
+  bindFailureGuide();
 
   try {
     await loadConfig();
@@ -214,7 +249,16 @@ function bindImageModal() {
   $("#imageModalBackdrop").addEventListener("click", closeImageModal);
 
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeImageModal();
+    if (e.key !== "Escape") return;
+
+    const modal = $("#imageModal");
+
+    if (modal && !modal.classList.contains("hidden")) {
+      // ถ้ารูปขยายเปิดอยู่ ให้ Esc ปิดเฉพาะรูปก่อน
+      // และไม่ส่ง Event ต่อไปปิด Failure Detail Modal พร้อมกัน
+      e.stopImmediatePropagation();
+      closeImageModal();
+    }
   });
 }
 
@@ -489,8 +533,19 @@ function bindHistory() {
   $("#refreshBtn").addEventListener("click", async () => {
     await refreshAllData({ showToast: true });
   });
+
   $("#searchBox").addEventListener("input", renderHistory);
   $("#filterModel").addEventListener("change", renderHistory);
+
+  $("#exportHistoryExcelBtn").addEventListener(
+    "click",
+    exportCurrentHistoryExcel
+  );
+
+  $("#exportFailureGuideExcelBtn").addEventListener(
+    "click",
+    exportFailureGuidesExcel
+  );
 }
 
 function jsonp(action, extra = {}) {
@@ -588,19 +643,64 @@ function fillModelFallback() {
   $("#modelOptions").innerHTML = "";
 }
 
+
+function validateHistoryRecordApi(records) {
+  if (!Array.isArray(records)) {
+    throw new Error("API records ต้องเป็น Array");
+  }
+
+  if (!records.length) {
+    return true;
+  }
+
+  const sample = records[0];
+
+  const missing = HISTORY_RECORD_REQUIRED_FIELDS.filter(
+    field => !Object.prototype.hasOwnProperty.call(sample, field)
+  );
+
+  if (missing.length) {
+    throw new Error(
+      "Frontend/API field ไม่ตรงกัน: ขาด " +
+      missing.join(", ")
+    );
+  }
+
+  return true;
+}
+
+
+function validateHistoryDisplayContract(contract) {
+  if (!Array.isArray(contract)) {
+    return false;
+  }
+
+  if (contract.length !== HISTORY_DISPLAY_ORDER.length) {
+    return false;
+  }
+
+  return contract.every(
+    (field, index) =>
+      String(field || "") === HISTORY_DISPLAY_ORDER[index]
+  );
+}
+
+
 async function loadHistory() {
   if (!isConfigured()) return;
 
   const body = $("#historyBody");
   body.innerHTML =
-    '<tr><td colspan="12" class="empty">กำลังโหลดข้อมูล...</td></tr>';
+    '<tr><td colspan="10" class="empty">กำลังโหลดข้อมูล...</td></tr>';
 
   try {
     const res = await jsonp("records");
 
     if (!res.ok) throw new Error(res.error || "โหลดข้อมูลไม่สำเร็จ");
 
-    allRecords = Array.isArray(res.records) ? res.records : [];
+    const records = Array.isArray(res.records) ? res.records : [];
+    validateHistoryRecordApi(records);
+    allRecords = records;
     syncHistoryModelFilterFromRecords();
     renderHistory();
     initializeDashboardOptions();
@@ -617,7 +717,7 @@ async function loadHistory() {
   } catch (err) {
     console.error(err);
     body.innerHTML =
-      '<tr><td colspan="12" class="empty">โหลดข้อมูลไม่สำเร็จ</td></tr>';
+      '<tr><td colspan="10" class="empty">โหลดข้อมูลไม่สำเร็จ</td></tr>';
     setStatus("เชื่อมต่อไม่ได้", false);
     return false;
   }
@@ -752,11 +852,18 @@ async function waitForRecordState(repairId, predicate, attempts = 5) {
 }
 
 
-function renderHistory() {
+function getCurrentHistoryFilteredRecords() {
   const q = $("#searchBox").value.trim().toLowerCase();
   const model = $("#filterModel").value;
 
-  const filtered = allRecords.filter(r => {
+  /*
+   * History ไม่มี Model sort.
+   * filterModel เป็น Filter เท่านั้น.
+   *
+   * allRecords มาจาก Backend ใหม่ -> เก่า ดังนั้นลำดับเดิม
+   * ของ History คือ Record ใหม่สุดก่อน และ Export ใช้ลำดับเดียวกัน.
+   */
+  return allRecords.filter(r => {
     const modelOk = !model || String(r.model) === model;
 
     const blob = [
@@ -767,6 +874,11 @@ function renderHistory() {
 
     return modelOk && (!q || blob.includes(q));
   });
+}
+
+
+function renderHistory() {
+  const filtered = getCurrentHistoryFilteredRecords();
 
   const body = $("#historyBody");
 
@@ -790,7 +902,14 @@ function renderHistory() {
 
       return `
         <tr>
-          <td data-label="Failure / Symptom" class="history-failure-cell">${esc(r.failure)}</td>
+          <td data-label="Failure / Symptom" class="history-failure-cell">
+            <button
+              type="button"
+              class="failure-detail-trigger failure-text-button"
+              data-failure="${escAttr(r.failure)}"
+              title="ดูจำนวนครั้งและวิธีแก้ไขแบบละเอียด"
+            >${esc(r.failure)}</button>
+          </td>
           <td data-label="Repair Action" class="history-action-cell">${esc(r.repairAction)}</td>
           <td data-label="รูป" class="history-image-cell">${imageCell}</td>
           <td data-label="Model">${esc(r.model)}</td>
@@ -842,6 +961,459 @@ function bindDashboard() {
     await refreshAllData({ showToast: true });
   });
 }
+
+
+/* =========================
+   EXCEL EXPORT
+   Excel 2003 XML (.xls)
+   No external library required.
+========================= */
+
+function xmlExcelEscape(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+
+function sanitizeExcelSheetName(value) {
+  const text = String(value || "Sheet")
+    .replace(/[\\\/\?\*\[\]:]/g, " ")
+    .trim();
+
+  return (text || "Sheet").slice(0, 31);
+}
+
+
+function sanitizeExportFilePart(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/\s+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+
+function exportTimestamp() {
+  const now = new Date();
+
+  const pad = value => String(value).padStart(2, "0");
+
+  return (
+    now.getFullYear() +
+    pad(now.getMonth() + 1) +
+    pad(now.getDate()) +
+    "_" +
+    pad(now.getHours()) +
+    pad(now.getMinutes()) +
+    pad(now.getSeconds())
+  );
+}
+
+
+function excelCellXml(value, options = {}) {
+  const {
+    type = "String",
+    style = "Cell",
+    href = ""
+  } = options;
+
+  const hrefAttr = href
+    ? ` ss:HRef="${xmlExcelEscape(href)}"`
+    : "";
+
+  return (
+    `<Cell ss:StyleID="${style}"${hrefAttr}>` +
+      `<Data ss:Type="${type}">${xmlExcelEscape(value)}</Data>` +
+    `</Cell>`
+  );
+}
+
+
+function excelRowXml(cells) {
+  return (
+    "<Row>" +
+    cells.map(cell => {
+      if (
+        cell &&
+        typeof cell === "object" &&
+        !Array.isArray(cell)
+      ) {
+        return excelCellXml(
+          cell.value,
+          cell
+        );
+      }
+
+      return excelCellXml(cell);
+    }).join("") +
+    "</Row>"
+  );
+}
+
+
+function buildExcelXmlWorkbook(worksheets) {
+  const sheetsXml = worksheets.map(sheet => {
+    const name = sanitizeExcelSheetName(sheet.name);
+
+    const rowsXml = sheet.rows
+      .map(excelRowXml)
+      .join("");
+
+    return `
+      <Worksheet ss:Name="${xmlExcelEscape(name)}">
+        <Table>
+          ${rowsXml}
+        </Table>
+        <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+          <FreezePanes/>
+          <FrozenNoSplit/>
+          <SplitHorizontal>1</SplitHorizontal>
+          <TopRowBottomPane>1</TopRowBottomPane>
+          <ActivePane>2</ActivePane>
+          <ProtectObjects>False</ProtectObjects>
+          <ProtectScenarios>False</ProtectScenarios>
+        </WorksheetOptions>
+      </Worksheet>
+    `;
+  }).join("");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook
+  xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:o="urn:schemas-microsoft-com:office:office"
+  xmlns:x="urn:schemas-microsoft-com:office:excel"
+  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+  xmlns:html="http://www.w3.org/TR/REC-html40">
+
+  <Styles>
+    <Style ss:ID="Default" ss:Name="Normal">
+      <Alignment ss:Vertical="Center"/>
+      <Borders/>
+      <Font ss:FontName="Arial" ss:Size="10"/>
+      <Interior/>
+      <NumberFormat/>
+      <Protection/>
+    </Style>
+
+    <Style ss:ID="Cell">
+      <Alignment ss:Vertical="Top" ss:WrapText="1"/>
+    </Style>
+
+    <Style ss:ID="Header">
+      <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
+      <Font ss:FontName="Arial" ss:Size="10" ss:Bold="1" ss:Color="#FFFFFF"/>
+      <Interior ss:Color="#1F4E78" ss:Pattern="Solid"/>
+    </Style>
+
+    <Style ss:ID="Number">
+      <Alignment ss:Horizontal="Right" ss:Vertical="Top"/>
+      <NumberFormat ss:Format="0"/>
+    </Style>
+
+    <Style ss:ID="Link">
+      <Alignment ss:Vertical="Top" ss:WrapText="1"/>
+      <Font ss:FontName="Arial" ss:Size="10" ss:Color="#0563C1" ss:Underline="Single"/>
+    </Style>
+  </Styles>
+
+  ${sheetsXml}
+</Workbook>`;
+}
+
+
+function downloadExcelWorkbook(filename, worksheets) {
+  const xml = buildExcelXmlWorkbook(worksheets);
+
+  const blob = new Blob(
+    ["\ufeff", xml],
+    {
+      type:
+        "application/vnd.ms-excel;charset=utf-8"
+    }
+  );
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.setTimeout(
+    () => URL.revokeObjectURL(url),
+    1500
+  );
+}
+
+
+function currentHistoryExportContext() {
+  return {
+    search: $("#searchBox").value.trim(),
+    model: $("#filterModel").value || "ALL"
+  };
+}
+
+
+function exportCurrentHistoryExcel() {
+  const records = getCurrentHistoryFilteredRecords();
+
+  if (!records.length) {
+    toast(
+      "ไม่มีข้อมูล History ตาม Search / Model Filter ปัจจุบัน",
+      "error"
+    );
+    return;
+  }
+
+  const context = currentHistoryExportContext();
+
+  const rows = [
+    [
+      { value: "Failure / Symptom", style: "Header" },
+      { value: "Repair Action", style: "Header" },
+      { value: "รูป", style: "Header" },
+      { value: "Model", style: "Header" },
+      { value: "Station", style: "Header" },
+      { value: "เริ่มซ่อม", style: "Header" },
+      { value: "ซ่อมเสร็จ", style: "Header" },
+      { value: "Repair Time (นาที)", style: "Header" },
+      { value: "คนทำ", style: "Header" },
+      { value: "Repair ID", style: "Header" }
+    ],
+
+    ...records.map(record => {
+      const image = resolveRecordImage(record);
+      const imageUrl = String(
+        image.thumbnailUrl ||
+        record.imageUrl ||
+        ""
+      ).trim();
+
+      return [
+        record.failure || "",
+        record.repairAction || "",
+        imageUrl
+          ? {
+              value: imageUrl,
+              style: "Link",
+              href: imageUrl
+            }
+          : "",
+        record.model || "",
+        record.station || "",
+        record.startRepair || "",
+        record.finishRepair || "",
+        {
+          value:
+            Number.isFinite(Number(record.repairTime))
+              ? Number(record.repairTime)
+              : 0,
+          type: "Number",
+          style: "Number"
+        },
+        record.repairBy || "",
+        record.repairId || ""
+      ];
+    })
+  ];
+
+  const modelPart = sanitizeExportFilePart(
+    context.model === "ALL"
+      ? "ALL_MODEL"
+      : context.model
+  );
+
+  const searchPart = context.search
+    ? "_SEARCH_" +
+      sanitizeExportFilePart(context.search).slice(0, 28)
+    : "";
+
+  const filename =
+    `Repair_History_${modelPart}${searchPart}_${exportTimestamp()}.xls`;
+
+  downloadExcelWorkbook(
+    filename,
+    [
+      {
+        name: "Repair History",
+        rows
+      },
+      {
+        name: "Export Filter",
+        rows: [
+          [
+            { value: "Filter", style: "Header" },
+            { value: "Current Value", style: "Header" }
+          ],
+          ["Search", context.search || "(ไม่ได้ค้นหา)"],
+          ["Model Filter", context.model],
+          ["Sort", "ไม่มี Model Sort · ใหม่สุดก่อน"],
+          [
+            "Exported Records",
+            {
+              value: records.length,
+              type: "Number",
+              style: "Number"
+            }
+          ],
+          [
+            "Export Time",
+            new Date().toLocaleString("th-TH")
+          ]
+        ]
+      }
+    ]
+  );
+
+  toast(
+    `Export History ${records.length} รายการแล้ว`,
+    "success"
+  );
+}
+
+
+async function exportFailureGuidesExcel() {
+  const btn = $("#exportFailureGuideExcelBtn");
+
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "กำลัง Export...";
+
+  try {
+    const res = await jsonp("failureGuides");
+
+    if (!res.ok) {
+      throw new Error(
+        res.error ||
+        "โหลด Detailed Failure Guide ไม่สำเร็จ"
+      );
+    }
+
+    const guides = Array.isArray(res.guides)
+      ? res.guides
+      : [];
+
+    if (!guides.length) {
+      toast(
+        "ยังไม่มีวิธีแก้ไขแบบละเอียดให้ Export",
+        "error"
+      );
+      return;
+    }
+
+    /*
+     * Fail Count ใช้ Repair History ทั้งหมด ไม่ใช้ History Filter
+     * เพื่อให้จำนวนครั้งของ Failure เป็น Total จริง.
+     */
+    const failCountMap = new Map();
+
+    allRecords.forEach(record => {
+      const key = normalizeFailure(
+        record.failure
+      ).toLocaleLowerCase();
+
+      if (!key) return;
+
+      failCountMap.set(
+        key,
+        (failCountMap.get(key) || 0) + 1
+      );
+    });
+
+    const rows = [
+      [
+        { value: "Guide ID", style: "Header" },
+        { value: "Failure / Symptom", style: "Header" },
+        { value: "Fail Count", style: "Header" },
+        { value: "วิธีแก้ไขแบบละเอียด", style: "Header" },
+        { value: "ผู้เพิ่ม", style: "Header" },
+        { value: "วันที่", style: "Header" },
+        { value: "เวลา", style: "Header" },
+        { value: "รูป", style: "Header" },
+        { value: "Image Name", style: "Header" },
+        { value: "Updated Date", style: "Header" },
+        { value: "Updated Time", style: "Header" }
+      ],
+
+      ...guides.map(guide => {
+        const image = resolveGuideImage(guide);
+
+        const imageUrl = String(
+          image.thumbnailUrl ||
+          guide.imageUrl ||
+          ""
+        ).trim();
+
+        const key = normalizeFailure(
+          guide.failure
+        ).toLocaleLowerCase();
+
+        return [
+          guide.guideId || "",
+          guide.failure || "",
+          {
+            value: failCountMap.get(key) || 0,
+            type: "Number",
+            style: "Number"
+          },
+          guide.detail || "",
+          guide.author || "",
+          guide.date || "",
+          guide.time || "",
+          imageUrl
+            ? {
+                value: imageUrl,
+                style: "Link",
+                href: imageUrl
+              }
+            : "",
+          guide.imageName || "",
+          guide.updatedDate || "",
+          guide.updatedTime || ""
+        ];
+      })
+    ];
+
+    downloadExcelWorkbook(
+      `Detailed_Failure_Guide_${exportTimestamp()}.xls`,
+      [
+        {
+          name: "Failure Guides",
+          rows
+        }
+      ]
+    );
+
+    toast(
+      `Export วิธีแก้ละเอียด ${guides.length} รายการแล้ว`,
+      "success"
+    );
+
+  } catch (err) {
+    console.error(err);
+
+    toast(
+      err.message ||
+      "Export วิธีแก้ไขแบบละเอียดไม่สำเร็จ",
+      "error"
+    );
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+
 
 function initializeDashboardDefaults() {
   const now = new Date();
@@ -1031,7 +1603,12 @@ function renderTopFailures(records) {
 
         <div class="failure-bar-content">
           <div class="failure-bar-head">
-            <span class="failure-name">${esc(g.failure)}</span>
+            <button
+              type="button"
+              class="failure-name failure-detail-trigger failure-text-button"
+              data-failure="${escAttr(g.failure)}"
+              title="ดูรายละเอียด Failure"
+            >${esc(g.failure)}</button>
             <strong>${g.count}</strong>
           </div>
 
@@ -1053,7 +1630,14 @@ function renderTopFailures(records) {
     return `
       <tr>
         <td>${index + 1}</td>
-        <td>${esc(g.failure)}</td>
+        <td>
+          <button
+            type="button"
+            class="failure-detail-trigger failure-text-button ranking-failure-button"
+            data-failure="${escAttr(g.failure)}"
+            title="ดูรายละเอียด Failure"
+          >${esc(g.failure)}</button>
+        </td>
         <td><strong>${g.count}</strong></td>
         <td>${pct.toFixed(1)}%</td>
         <td>${Math.round(g.avgRepairTime)} min</td>
@@ -1340,6 +1924,692 @@ function uniqueSorted(values) {
 
 
 
+
+/* =========================
+   FAILURE DETAIL / KNOWLEDGE GUIDE
+========================= */
+
+function bindFailureGuide() {
+  const modal = $("#failureDetailModal");
+  if (!modal) return;
+
+  $("#closeFailureDetailModal").addEventListener("click", closeFailureDetailModal);
+  $("#failureDetailBackdrop").addEventListener("click", closeFailureDetailModal);
+
+  document.addEventListener("click", (event) => {
+    const trigger = event.target.closest(".failure-detail-trigger");
+    if (!trigger) return;
+
+    const failure = String(trigger.dataset.failure || "").trim();
+    if (!failure) return;
+
+    openFailureDetailModal(failure);
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeFailureDetailModal();
+    }
+  });
+
+  $("#toggleFailureGuideFormBtn").addEventListener("click", () => {
+    const form = $("#failureGuideAddForm");
+    form.classList.toggle("hidden");
+
+    if (!form.classList.contains("hidden")) {
+      $("#failureGuideDetailInput").focus();
+    }
+  });
+
+  $("#cancelFailureGuideBtn").addEventListener("click", () => {
+    resetFailureGuideForm();
+    $("#failureGuideAddForm").classList.add("hidden");
+  });
+
+  $("#failureGuideImageInput").addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      clearFailureGuideSelectedImage();
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast("กรุณาเลือกไฟล์รูปภาพ", "error");
+      clearFailureGuideSelectedImage();
+      return;
+    }
+
+    try {
+      selectedFailureGuideImage = await compressImage(file);
+      $("#failureGuideImagePreview").src = selectedFailureGuideImage.dataUrl;
+      $("#failureGuideImagePreviewWrap").classList.remove("hidden");
+    } catch (err) {
+      console.error(err);
+      clearFailureGuideSelectedImage();
+      toast("เตรียมรูปไม่สำเร็จ", "error");
+    }
+  });
+
+  $("#failureGuideRemoveImageBtn").addEventListener(
+    "click",
+    clearFailureGuideSelectedImage
+  );
+
+  $("#failureGuideAddForm").addEventListener("submit", saveFailureGuide);
+
+  // Admin Failure Guide
+  $("#adminGuideSearchBox").addEventListener("input", renderAdminFailureGuides);
+  $("#adminGuideReloadBtn").addEventListener("click", loadAdminFailureGuides);
+  $("#adminGuideClearEditBtn").addEventListener("click", clearAdminGuideEditor);
+  $("#adminGuideEditForm").addEventListener("submit", saveAdminFailureGuideEdit);
+
+  $("#adminGuideNewImage").addEventListener("change", async (event) => {
+    const file = event.target.files && event.target.files[0];
+
+    if (!file) {
+      clearAdminGuideNewImage();
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast("กรุณาเลือกไฟล์รูปภาพ", "error");
+      clearAdminGuideNewImage();
+      return;
+    }
+
+    try {
+      adminGuideNewImage = await compressImage(file);
+      $("#adminGuideNewImagePreview").src = adminGuideNewImage.dataUrl;
+      $("#adminGuideNewImagePreviewWrap").classList.remove("hidden");
+    } catch (err) {
+      console.error(err);
+      clearAdminGuideNewImage();
+      toast("เตรียมรูปใหม่ไม่สำเร็จ", "error");
+    }
+  });
+
+  $("#adminGuideClearNewImageBtn").addEventListener(
+    "click",
+    clearAdminGuideNewImage
+  );
+}
+
+
+async function openFailureDetailModal(failureValue) {
+  const failure = normalizeFailure(failureValue);
+  if (!failure) return;
+
+  activeFailureName = failure;
+
+  $("#failureDetailTitle").textContent = failure;
+  $("#failureGuideFormFailure").textContent = failure;
+
+  const localCount = countFailureOccurrences(failure);
+  $("#failureDetailCount").textContent = `${localCount} ครั้ง`;
+  $("#failureGuideCount").textContent = "กำลังโหลดวิธีแก้...";
+  $("#failureGuideList").innerHTML =
+    '<div class="failure-guide-empty">กำลังโหลดวิธีแก้ไขแบบละเอียด...</div>';
+
+  resetFailureGuideForm();
+  $("#failureGuideAddForm").classList.add("hidden");
+
+  $("#failureDetailModal").classList.remove("hidden");
+  $("#failureDetailModal").setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+
+  try {
+    const res = await jsonp("failureDetail", { failure });
+
+    if (!res.ok) {
+      throw new Error(res.error || "โหลด Failure Detail ไม่สำเร็จ");
+    }
+
+    if (normalizeFailure(activeFailureName).toLowerCase() !==
+        normalizeFailure(failure).toLowerCase()) {
+      return;
+    }
+
+    $("#failureDetailCount").textContent =
+      `${Number(res.failCount || 0)} ครั้ง`;
+
+    renderFailureGuides(
+      Array.isArray(res.guides) ? res.guides : []
+    );
+
+  } catch (err) {
+    console.error(err);
+    $("#failureGuideList").innerHTML =
+      '<div class="failure-guide-empty error">โหลดวิธีแก้ไขไม่สำเร็จ</div>';
+    $("#failureGuideCount").textContent = "โหลดไม่สำเร็จ";
+  }
+}
+
+
+function closeFailureDetailModal() {
+  const modal = $("#failureDetailModal");
+  if (!modal || modal.classList.contains("hidden")) return;
+
+  modal.classList.add("hidden");
+  modal.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+
+  activeFailureName = "";
+  resetFailureGuideForm();
+}
+
+
+function countFailureOccurrences(failureValue) {
+  const key = normalizeFailure(failureValue).toLocaleLowerCase();
+
+  return allRecords.filter(record =>
+    normalizeFailure(record.failure).toLocaleLowerCase() === key
+  ).length;
+}
+
+
+function renderFailureGuides(guides) {
+  $("#failureGuideCount").textContent = `${guides.length} วิธีแก้`;
+
+  const list = $("#failureGuideList");
+
+  if (!guides.length) {
+    list.innerHTML = `
+      <div class="failure-guide-empty">
+        <strong>ยังไม่มีวิธีแก้ไขแบบละเอียด</strong>
+        <span>กด “+ เพิ่มวิธีแก้ไขแบบละเอียด” เพื่อเพิ่ม Knowledge แรก</span>
+      </div>
+    `;
+    return;
+  }
+
+  list.innerHTML = guides.map((guide, index) => {
+    const image = resolveGuideImage(guide);
+
+    const imageHtml = image.thumbnailUrl
+      ? `
+        <img
+          class="failure-guide-image"
+          src="${escAttr(image.thumbnailUrl)}"
+          alt="${escAttr(image.name || "Failure guide image")}"
+          loading="lazy"
+          referrerpolicy="no-referrer"
+          data-url="${escAttr(image.thumbnailUrl)}"
+          data-fileid="${escAttr(image.fileId)}"
+          data-name="${escAttr(image.name)}"
+        >
+      `
+      : "";
+
+    const author = String(guide.author || "").trim();
+    const created = [
+      String(guide.date || "").trim(),
+      String(guide.time || "").trim()
+    ].filter(Boolean).join(" ");
+
+    return `
+      <article class="failure-guide-item">
+        <div class="failure-guide-item-head">
+          <span class="failure-guide-number">วิธีที่ ${index + 1}</span>
+          <span class="failure-guide-id">${esc(guide.guideId || "")}</span>
+        </div>
+
+        <div class="failure-guide-detail-text">${esc(guide.detail || "")}</div>
+
+        ${imageHtml}
+
+        <div class="failure-guide-meta">
+          ${author ? `<span>ผู้เพิ่ม: <strong>${esc(author)}</strong></span>` : ""}
+          ${created ? `<span>บันทึก: ${esc(created)}</span>` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  list.querySelectorAll(".failure-guide-image").forEach(img => {
+    img.addEventListener("click", () => {
+      openImageModal(
+        img.dataset.url,
+        img.dataset.name,
+        img.dataset.fileid
+      );
+    });
+
+    img.addEventListener("error", async () => {
+      const id = normalizeDriveFileId(img.dataset.fileid);
+      if (!id) return;
+
+      try {
+        img.src = await getDriveImageData(id);
+      } catch (err) {
+        console.error(err);
+        img.style.display = "none";
+      }
+    }, { once: true });
+  });
+}
+
+
+function resolveGuideImage(guide) {
+  const rawUrl = String(guide?.imageUrl || "").trim();
+
+  const fileId =
+    normalizeDriveFileId(guide?.imageFileId) ||
+    extractDriveFileId(rawUrl);
+
+  return {
+    fileId,
+    thumbnailUrl: fileId
+      ? buildDriveThumbnailUrl(fileId)
+      : rawUrl,
+    name: String(guide?.imageName || "").trim()
+  };
+}
+
+
+function clearFailureGuideSelectedImage() {
+  selectedFailureGuideImage = null;
+
+  const input = $("#failureGuideImageInput");
+  if (input) input.value = "";
+
+  $("#failureGuideImagePreview").removeAttribute("src");
+  $("#failureGuideImagePreviewWrap").classList.add("hidden");
+}
+
+
+function resetFailureGuideForm() {
+  const form = $("#failureGuideAddForm");
+  if (form) form.reset();
+
+  clearFailureGuideSelectedImage();
+
+  if ($("#failureGuideFormFailure")) {
+    $("#failureGuideFormFailure").textContent = activeFailureName || "";
+  }
+}
+
+
+async function saveFailureGuide(event) {
+  event.preventDefault();
+
+  const failure = normalizeFailure(activeFailureName);
+  const detail = $("#failureGuideDetailInput").value.trim();
+  const author = $("#failureGuideAuthorInput").value.trim();
+
+  if (!failure) {
+    toast("ไม่พบ Failure ที่ต้องการบันทึก", "error");
+    return;
+  }
+
+  if (!detail) {
+    toast("กรุณาใส่วิธีแก้ไขแบบละเอียด", "error");
+    return;
+  }
+
+  const btn = $("#saveFailureGuideBtn");
+  btn.disabled = true;
+  btn.textContent = "กำลังบันทึก...";
+
+  try {
+    await sendFailureGuideOperation({
+      failure,
+      detail,
+      author,
+      imageName: selectedFailureGuideImage
+        ? selectedFailureGuideImage.name
+        : "",
+      imageMimeType: selectedFailureGuideImage
+        ? selectedFailureGuideImage.mimeType
+        : "",
+      imageBase64: selectedFailureGuideImage
+        ? selectedFailureGuideImage.base64
+        : ""
+    });
+
+    resetFailureGuideForm();
+    $("#failureGuideAddForm").classList.add("hidden");
+
+    toast("เพิ่มวิธีแก้ไขแบบละเอียดแล้ว", "success");
+    await openFailureDetailModal(failure);
+
+    if (adminLoggedIn) {
+      await loadAdminFailureGuides();
+    }
+
+  } catch (err) {
+    console.error(err);
+    toast(err.message || "บันทึกวิธีแก้ไขไม่สำเร็จ", "error");
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "บันทึกวิธีแก้ไข";
+  }
+}
+
+
+async function sendFailureGuideOperation(values) {
+  const opId = createAdminOpId();
+
+  const body = new URLSearchParams({
+    action: "saveFailureGuide",
+    opId,
+    ...values
+  });
+
+  await fetch(GAS_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body
+  });
+
+  return pollOperationStatus(opId);
+}
+
+
+/* ---------- Admin Failure Guide ---------- */
+
+async function loadAdminFailureGuides() {
+  if (!adminLoggedIn) return false;
+
+  try {
+    const res = await jsonp("failureGuides");
+
+    if (!res.ok) {
+      throw new Error(res.error || "โหลด Failure Guide ไม่สำเร็จ");
+    }
+
+    allFailureGuides = Array.isArray(res.guides)
+      ? res.guides
+      : [];
+
+    renderAdminFailureGuides();
+    return true;
+
+  } catch (err) {
+    console.error(err);
+    $("#adminGuideTableBody").innerHTML =
+      '<tr><td colspan="6" class="empty">โหลด Failure Guide ไม่สำเร็จ</td></tr>';
+    return false;
+  }
+}
+
+
+function renderAdminFailureGuides() {
+  if (!adminLoggedIn) return;
+
+  const q = $("#adminGuideSearchBox").value.trim().toLowerCase();
+
+  const guides = allFailureGuides.filter(guide => {
+    const blob = [
+      guide.guideId,
+      guide.failure,
+      guide.detail,
+      guide.author,
+      guide.date,
+      guide.time
+    ].join(" ").toLowerCase();
+
+    return !q || blob.includes(q);
+  });
+
+  $("#adminGuideCount").textContent = `${guides.length} รายการ`;
+
+  const body = $("#adminGuideTableBody");
+
+  if (!guides.length) {
+    body.innerHTML =
+      '<tr><td colspan="6" class="empty">ไม่พบ Failure Guide</td></tr>';
+    return;
+  }
+
+  body.innerHTML = guides.map(guide => `
+    <tr>
+      <td><strong>${esc(guide.guideId || "")}</strong></td>
+      <td>${esc(guide.failure || "")}</td>
+      <td class="admin-guide-detail-cell">${esc(guide.detail || "")}</td>
+      <td>${esc(guide.author || "-")}</td>
+      <td>${esc(guide.date || "")}</td>
+      <td class="admin-actions-cell">
+        <button
+          type="button"
+          class="admin-guide-edit-btn"
+          data-id="${escAttr(guide.guideId || "")}"
+        >แก้ไข</button>
+        <button
+          type="button"
+          class="admin-guide-delete-btn"
+          data-id="${escAttr(guide.guideId || "")}"
+        >ลบ</button>
+      </td>
+    </tr>
+  `).join("");
+
+  body.querySelectorAll(".admin-guide-edit-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const guide = allFailureGuides.find(
+        item => String(item.guideId) === String(btn.dataset.id)
+      );
+
+      if (guide) selectAdminFailureGuide(guide);
+    });
+  });
+
+  body.querySelectorAll(".admin-guide-delete-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      deleteAdminFailureGuide(btn.dataset.id);
+    });
+  });
+}
+
+
+function selectAdminFailureGuide(guide) {
+  adminSelectedGuideId = String(guide.guideId || "");
+
+  $("#adminGuideEditId").value = guide.guideId || "";
+  $("#adminGuideEditFailure").value = guide.failure || "";
+  $("#adminGuideEditDetail").value = guide.detail || "";
+  $("#adminGuideEditAuthor").value = guide.author || "";
+  $("#adminGuideRemoveImage").checked = false;
+
+  clearAdminGuideNewImage();
+
+  const image = resolveGuideImage(guide);
+
+  if (image.fileId || image.thumbnailUrl) {
+    const currentImage = $("#adminGuideCurrentImage");
+
+    $("#adminGuideCurrentImageWrap").classList.remove("hidden");
+    currentImage.style.display = "";
+    currentImage.onerror = null;
+    currentImage.dataset.fileid = image.fileId || "";
+    currentImage.src = image.thumbnailUrl || "";
+
+    currentImage.onerror = async () => {
+      const id = normalizeDriveFileId(
+        currentImage.dataset.fileid
+      );
+
+      if (!id) {
+        currentImage.style.display = "none";
+        return;
+      }
+
+      try {
+        currentImage.onerror = null;
+        currentImage.src = await getDriveImageData(id);
+      } catch (err) {
+        console.error(err);
+        currentImage.style.display = "none";
+      }
+    };
+
+  } else {
+    const currentImage = $("#adminGuideCurrentImage");
+
+    $("#adminGuideCurrentImageWrap").classList.add("hidden");
+    currentImage.onerror = null;
+    currentImage.style.display = "";
+    currentImage.dataset.fileid = "";
+    currentImage.removeAttribute("src");
+  }
+
+  $("#adminGuideSaveEditBtn").disabled = false;
+
+  if (window.innerWidth < 900) {
+    $("#adminGuideEditForm").scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
+}
+
+
+function clearAdminGuideNewImage() {
+  adminGuideNewImage = null;
+
+  const input = $("#adminGuideNewImage");
+  if (input) input.value = "";
+
+  $("#adminGuideNewImagePreview").removeAttribute("src");
+  $("#adminGuideNewImagePreviewWrap").classList.add("hidden");
+}
+
+
+function clearAdminGuideEditor() {
+  adminSelectedGuideId = "";
+
+  const form = $("#adminGuideEditForm");
+  if (form) form.reset();
+
+  if ($("#adminGuideEditId")) {
+    $("#adminGuideEditId").value = "";
+  }
+
+  if ($("#adminGuideCurrentImageWrap")) {
+    $("#adminGuideCurrentImageWrap").classList.add("hidden");
+  }
+
+  if ($("#adminGuideCurrentImage")) {
+    const currentImage = $("#adminGuideCurrentImage");
+    currentImage.onerror = null;
+    currentImage.style.display = "";
+    currentImage.dataset.fileid = "";
+    currentImage.removeAttribute("src");
+  }
+
+  clearAdminGuideNewImage();
+
+  if ($("#adminGuideSaveEditBtn")) {
+    $("#adminGuideSaveEditBtn").disabled = true;
+  }
+}
+
+
+async function saveAdminFailureGuideEdit(event) {
+  event.preventDefault();
+
+  if (!adminLoggedIn || !adminSelectedGuideId) {
+    toast("กรุณาเลือก Failure Guide ที่ต้องการแก้ไข", "error");
+    return;
+  }
+
+  const failure = normalizeFailure($("#adminGuideEditFailure").value);
+  const detail = $("#adminGuideEditDetail").value.trim();
+  const author = $("#adminGuideEditAuthor").value.trim();
+
+  if (!failure || !detail) {
+    toast("Failure และวิธีแก้ไขแบบละเอียดห้ามว่าง", "error");
+    return;
+  }
+
+  const btn = $("#adminGuideSaveEditBtn");
+  btn.disabled = true;
+  btn.textContent = "กำลังบันทึก...";
+
+  try {
+    await sendAdminOperation("adminGuideUpdate", {
+      guideId: adminSelectedGuideId,
+      failure,
+      detail,
+      author,
+      removeImage: $("#adminGuideRemoveImage").checked ? "true" : "false",
+      imageName: adminGuideNewImage ? adminGuideNewImage.name : "",
+      imageMimeType: adminGuideNewImage ? adminGuideNewImage.mimeType : "",
+      imageBase64: adminGuideNewImage ? adminGuideNewImage.base64 : ""
+    });
+
+    toast("แก้ไข Failure Guide แล้ว", "success");
+
+    await loadAdminFailureGuides();
+
+    const updated = allFailureGuides.find(
+      item => String(item.guideId) === String(adminSelectedGuideId)
+    );
+
+    if (updated) {
+      selectAdminFailureGuide(updated);
+    }
+
+    if (
+      activeFailureName &&
+      normalizeFailure(activeFailureName).toLowerCase() ===
+      normalizeFailure(failure).toLowerCase()
+    ) {
+      await openFailureDetailModal(failure);
+    }
+
+  } catch (err) {
+    console.error(err);
+    toast(err.message || "แก้ไข Failure Guide ไม่สำเร็จ", "error");
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "บันทึก Guide";
+  }
+}
+
+
+async function deleteAdminFailureGuide(guideId) {
+  if (!adminLoggedIn) return;
+
+  const guide = allFailureGuides.find(
+    item => String(item.guideId) === String(guideId)
+  );
+
+  const label = guide
+    ? `${guide.failure}\n${guide.detail}`
+    : guideId;
+
+  if (!confirm(`ลบ Failure Guide นี้หรือไม่?\n\n${label}`)) {
+    return;
+  }
+
+  try {
+    await sendAdminOperation("adminGuideDelete", { guideId });
+
+    if (adminSelectedGuideId === String(guideId)) {
+      clearAdminGuideEditor();
+    }
+
+    await loadAdminFailureGuides();
+    toast("ลบ Failure Guide แล้ว", "success");
+
+    if (activeFailureName) {
+      await openFailureDetailModal(activeFailureName);
+    }
+
+  } catch (err) {
+    console.error(err);
+    toast(err.message || "ลบ Failure Guide ไม่สำเร็จ", "error");
+  }
+}
+
+
+
 /* =========================
    ADMIN
 ========================= */
@@ -1382,12 +2652,14 @@ function bindAdmin() {
     $("#adminBackendStatus").classList.add("ok");
 
     renderAdminTable();
+    await loadAdminFailureGuides();
     toast("เข้าสู่ Admin แล้ว", "success");
   });
 
   $("#adminLogoutBtn").addEventListener("click", logoutAdmin);
   $("#adminReloadBtn").addEventListener("click", async () => {
     await refreshAllData({ showToast: true });
+    await loadAdminFailureGuides();
   });
 
   $("#adminNormalizeBtn").addEventListener("click", normalizeAllAdminRecords);
@@ -1427,12 +2699,20 @@ async function checkAdminBackendVersion() {
       };
     }
 
-    if (version !== "V20") {
+    if (version !== REQUIRED_BACKEND_VERSION) {
       return {
         ok: false,
         error:
-          `Frontend V21 ใช้กับ Apps Script V20 แต่ Backend ตอนนี้เป็น ${version || "เวอร์ชันเก่า"} ` +
+          `Frontend V22.3 ต้องใช้ Apps Script ${REQUIRED_BACKEND_VERSION} แต่ Backend ตอนนี้เป็น ${version || "เวอร์ชันเก่า"} ` +
           `กรุณา Deploy → Manage deployments → Edit → New version → Deploy`
+      };
+    }
+
+    if (!validateHistoryDisplayContract(res.historyDisplayOrder)) {
+      return {
+        ok: false,
+        error:
+          "Frontend/API History order ไม่ตรงกัน กรุณาใช้ Frontend และ Code.gs จาก V22.2 ชุดเดียวกัน"
       };
     }
 
@@ -1462,7 +2742,8 @@ function createAdminOpId() {
 
 
 async function pollOperationStatus(opId) {
-  for (let attempt = 0; attempt < 20; attempt++) {
+  // V22.1: เพิ่มเวลารอ เพราะ Save รูป + Failure Summary อาจใช้เวลามากกว่าเดิม
+  for (let attempt = 0; attempt < 40; attempt++) {
     await sleep(attempt === 0 ? 300 : 450);
 
     let status;
@@ -1475,7 +2756,7 @@ async function pollOperationStatus(opId) {
 
     if (status && status.error && /Unknown action/i.test(status.error)) {
       throw new Error(
-        "Apps Script ที่ใช้อยู่ยังไม่ใช่ V20 กรุณา Deploy New version"
+        "Apps Script ต้องเป็น V22.2 สำหรับ Frontend V22.3 นี้ กรุณาตรวจ Deployment"
       );
     }
 
@@ -1547,6 +2828,9 @@ function logoutAdmin() {
   adminSessionUser = "";
   adminSessionPassword = "";
   adminSelectedRepairId = "";
+  adminSelectedGuideId = "";
+  allFailureGuides = [];
+  clearAdminGuideEditor();
 
   $("#adminPassword").value = "";
   $("#adminWorkspace").classList.add("hidden");

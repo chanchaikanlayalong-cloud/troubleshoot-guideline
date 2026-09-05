@@ -1,5 +1,5 @@
 /**
- * ATS1 Repair API V20
+ * ATS1 Repair API V22.2
  *
  * จุดสำคัญ:
  * - ข้อมูลใหม่บันทึกแบบ Canonical A:N เสมอ
@@ -13,13 +13,15 @@ const CONFIG = {
   SPREADSHEET_ID: '1VAEBe8tEPCpaNVoYdru_hbwQ-XrPTrbalftafJqVwLU',
   REPAIR_SHEET: 'Repair_Log',
   MODEL_SHEET: 'Master_Model',
+  FAILURE_GUIDE_SHEET: 'Failure_Guide',
+  FAILURE_SUMMARY_SHEET: 'Failure_Summary',
   TIMEZONE: 'Asia/Bangkok',
   DRIVE_FOLDER_ID: '',
   PUBLIC_IMAGE_ACCESS: true,
   ADMIN_PASSWORD: 'adminmin'
 };
 
-const API_VERSION = 'V20';
+const API_VERSION = 'V22.2';
 
 const CANONICAL_HEADERS = [
   'Repair ID',            // A
@@ -36,6 +38,64 @@ const CANONICAL_HEADERS = [
   'Image File ID',        // L
   'Image URL',            // M
   'Image Name'            // N
+];
+
+const FAILURE_GUIDE_HEADERS = [
+  'Guide ID',                  // A
+  'Failure Key',               // B
+  'Failure / Symptom',         // C
+  'วิธีแก้ไขแบบละเอียด',       // D
+  'ผู้เพิ่ม',                   // E
+  'วันที่',                     // F
+  'เวลา',                       // G
+  'Image File ID',             // H
+  'Image URL',                 // I
+  'Image Name',                // J
+  'Updated Date',              // K
+  'Updated Time'               // L
+];
+
+const FAILURE_SUMMARY_HEADERS = [
+  'Failure Key',               // A
+  'Failure / Symptom',         // B
+  'Fail Count',                // C
+  'Last Seen',                 // D
+  'Updated At'                 // E
+];
+
+/*
+ * V22.2 Repair History display contract.
+ * "image" uses imageFileId / imageUrl / imageName from records API.
+ */
+const HISTORY_DISPLAY_ORDER = [
+  'failure',
+  'repairAction',
+  'image',
+  'model',
+  'station',
+  'startRepair',
+  'finishRepair',
+  'repairTime',
+  'repairBy',
+  'repairId'
+];
+
+const REPAIR_RECORD_API_FIELDS = [
+  'sheetRow',
+  'repairId',
+  'date',
+  'time',
+  'model',
+  'station',
+  'failure',
+  'repairAction',
+  'startRepair',
+  'finishRepair',
+  'repairTime',
+  'repairBy',
+  'imageFileId',
+  'imageUrl',
+  'imageName'
 ];
 
 
@@ -57,6 +117,21 @@ function doGet(e) {
     } else if (action === 'records') {
       data = { ok: true, records: getRecords_() };
 
+    } else if (action === 'failureDetail') {
+      data = getFailureDetail_(p.failure);
+
+    } else if (action === 'failureGuides') {
+      data = {
+        ok: true,
+        guides: getFailureGuides_(p.failure || '')
+      };
+
+    } else if (action === 'failureSummary') {
+      data = {
+        ok: true,
+        failures: buildFailureSummary_()
+      };
+
     } else if (action === 'imageData') {
       data = getImageData_(p.fileId);
 
@@ -73,6 +148,10 @@ function doGet(e) {
         apiVersion: API_VERSION,
         message: 'ATS1 Repair API ' + API_VERSION + ' is running',
         rowCount: sh ? Math.max(0, sh.getLastRow() - 1) : 0,
+        failureGuideSheet: CONFIG.FAILURE_GUIDE_SHEET,
+        failureSummarySheet: CONFIG.FAILURE_SUMMARY_SHEET,
+        historyDisplayOrder: HISTORY_DISPLAY_ORDER,
+        repairRecordApiFields: REPAIR_RECORD_API_FIELDS,
         imageFolderReady: folderInfo.ready,
         imageFolderId: folderInfo.id,
         imageFolderUrl: folderInfo.url
@@ -127,6 +206,16 @@ function doPost(e) {
       return json_(result);
     }
 
+    if (action === 'saveFailureGuide') {
+      result = {
+        ok: true,
+        ...saveFailureGuide_(p)
+      };
+
+      if (opId) saveAdminOperationStatus_(opId, result);
+      return json_(result);
+    }
+
     if (action === 'adminUpdate') {
       verifyAdminPassword_(p.adminPassword);
 
@@ -145,6 +234,30 @@ function doPost(e) {
       result = {
         ok: true,
         ...adminDeleteRecord_(p)
+      };
+
+      if (opId) saveAdminOperationStatus_(opId, result);
+      return json_(result);
+    }
+
+    if (action === 'adminGuideUpdate') {
+      verifyAdminPassword_(p.adminPassword);
+
+      result = {
+        ok: true,
+        ...adminUpdateFailureGuide_(p)
+      };
+
+      if (opId) saveAdminOperationStatus_(opId, result);
+      return json_(result);
+    }
+
+    if (action === 'adminGuideDelete') {
+      verifyAdminPassword_(p.adminPassword);
+
+      result = {
+        ok: true,
+        ...adminDeleteFailureGuide_(p)
       };
 
       if (opId) saveAdminOperationStatus_(opId, result);
@@ -174,7 +287,15 @@ function doPost(e) {
 
     if (
       opId &&
-      ['save', 'adminUpdate', 'adminDelete', 'adminNormalizeAll'].includes(action)
+      [
+        'save',
+        'saveFailureGuide',
+        'adminUpdate',
+        'adminDelete',
+        'adminGuideUpdate',
+        'adminGuideDelete',
+        'adminNormalizeAll'
+      ].includes(action)
     ) {
       try {
         saveAdminOperationStatus_(opId, result);
@@ -843,6 +964,7 @@ function saveRecord_(p) {
 
     addModelIfNew_(ss, model);
     SpreadsheetApp.flush();
+    safeSyncFailureSummary_();
 
     return {
       repairId: repairId,
@@ -1085,6 +1207,7 @@ function adminUpdateRecord_(p) {
 
     addModelIfNew_(ss, record.model);
     SpreadsheetApp.flush();
+    safeSyncFailureSummary_();
 
     // Trash หลัง Sheet commit เท่านั้น เพื่อไม่ให้ Sheet อ้างถึงรูปที่ถูกลบ
     // ในกรณี Sheet write ล้มเหลว.
@@ -1139,6 +1262,7 @@ function adminDeleteRecord_(p) {
 
     sh.deleteRow(rowNumber);
     SpreadsheetApp.flush();
+    safeSyncFailureSummary_();
 
     if (record.imageFileId) {
       trashRepairImageSafely_(record.imageFileId);
@@ -1242,6 +1366,7 @@ function adminNormalizeAll_() {
     }
 
     SpreadsheetApp.flush();
+    safeSyncFailureSummary_();
 
     return {
       normalizedRows: valid.length,
@@ -1384,6 +1509,686 @@ function cleanupOldOperationStatuses_() {
     }
   });
 }
+
+
+/* =========================================================
+   FAILURE SUMMARY / DETAILED GUIDE
+========================================================= */
+
+function normalizeFailureKey_(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase();
+}
+
+
+function ensureFailureGuideSheet_(ss) {
+  let sh = ss.getSheetByName(
+    CONFIG.FAILURE_GUIDE_SHEET
+  );
+
+  if (!sh) {
+    sh = ss.insertSheet(
+      CONFIG.FAILURE_GUIDE_SHEET
+    );
+  }
+
+  if (sh.getMaxColumns() < FAILURE_GUIDE_HEADERS.length) {
+    sh.insertColumnsAfter(
+      sh.getMaxColumns(),
+      FAILURE_GUIDE_HEADERS.length - sh.getMaxColumns()
+    );
+  }
+
+  sh.getRange(
+    1,
+    1,
+    1,
+    FAILURE_GUIDE_HEADERS.length
+  )
+    .setValues([FAILURE_GUIDE_HEADERS])
+    .setFontWeight('bold')
+    .setBackground('#7F6000')
+    .setFontColor('#FFFFFF');
+
+  sh.setFrozenRows(1);
+
+  return sh;
+}
+
+
+function ensureFailureSummarySheet_(ss) {
+  let sh = ss.getSheetByName(
+    CONFIG.FAILURE_SUMMARY_SHEET
+  );
+
+  if (!sh) {
+    sh = ss.insertSheet(
+      CONFIG.FAILURE_SUMMARY_SHEET
+    );
+  }
+
+  if (sh.getMaxColumns() < FAILURE_SUMMARY_HEADERS.length) {
+    sh.insertColumnsAfter(
+      sh.getMaxColumns(),
+      FAILURE_SUMMARY_HEADERS.length - sh.getMaxColumns()
+    );
+  }
+
+  sh.getRange(
+    1,
+    1,
+    1,
+    FAILURE_SUMMARY_HEADERS.length
+  )
+    .setValues([FAILURE_SUMMARY_HEADERS])
+    .setFontWeight('bold')
+    .setBackground('#548235')
+    .setFontColor('#FFFFFF');
+
+  sh.setFrozenRows(1);
+
+  return sh;
+}
+
+
+function buildFailureSummary_() {
+  const records = getRecords_();
+  const map = new Map();
+
+  // getRecords_ คืนค่าใหม่ -> เก่า
+  records.forEach(record => {
+    const display = String(
+      record.failure || ''
+    ).trim().replace(/\s+/g, ' ');
+
+    const key = normalizeFailureKey_(display);
+
+    if (!key) return;
+
+    if (!map.has(key)) {
+      map.set(key, {
+        failureKey: key,
+        failure: display,
+        failCount: 0,
+        lastSeen: [
+          String(record.date || '').trim(),
+          String(record.time || '').trim()
+        ].filter(Boolean).join(' ')
+      });
+    }
+
+    map.get(key).failCount += 1;
+  });
+
+  return Array.from(map.values())
+    .sort((a, b) =>
+      b.failCount - a.failCount ||
+      a.failure.localeCompare(b.failure)
+    );
+}
+
+
+function syncFailureSummary_() {
+  const ss = SpreadsheetApp.openById(
+    CONFIG.SPREADSHEET_ID
+  );
+
+  const sh = ensureFailureSummarySheet_(ss);
+  const summary = buildFailureSummary_();
+
+  const lastRow = sh.getLastRow();
+
+  if (lastRow > 1) {
+    sh.getRange(
+      2,
+      1,
+      lastRow - 1,
+      Math.max(
+        sh.getLastColumn(),
+        FAILURE_SUMMARY_HEADERS.length
+      )
+    ).clearContent();
+  }
+
+  if (summary.length) {
+    const updatedAt = Utilities.formatDate(
+      new Date(),
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy HH:mm:ss'
+    );
+
+    const rows = summary.map(item => [
+      clean_(item.failureKey),
+      clean_(item.failure),
+      Number(item.failCount || 0),
+      clean_(item.lastSeen),
+      updatedAt
+    ]);
+
+    sh.getRange(
+      2,
+      1,
+      rows.length,
+      FAILURE_SUMMARY_HEADERS.length
+    ).setValues(rows);
+  }
+
+  SpreadsheetApp.flush();
+
+  return summary;
+}
+
+
+/**
+ * Failure_Summary เป็นข้อมูลสรุปเสริม
+ * ห้ามทำให้ Repair_Log Save/Edit/Delete ที่สำเร็จแล้ว
+ * กลายเป็น Error เพราะ Summary เขียนไม่สำเร็จ
+ */
+function safeSyncFailureSummary_() {
+  try {
+    const summary = syncFailureSummary_();
+
+    return {
+      ok: true,
+      count: summary.length
+    };
+
+  } catch (err) {
+    console.log(
+      'Failure_Summary sync failed: ' +
+      String(err.message || err)
+    );
+
+    return {
+      ok: false,
+      error: String(err.message || err)
+    };
+  }
+}
+
+
+function getFailureDetail_(failureValue) {
+  const failure = requireText_(
+    failureValue,
+    'Failure / Symptom',
+    1500
+  );
+
+  const key = normalizeFailureKey_(failure);
+
+  const summaryItem = buildFailureSummary_()
+    .find(item => item.failureKey === key);
+
+  return {
+    ok: true,
+    failure: summaryItem
+      ? summaryItem.failure
+      : failure,
+    failureKey: key,
+    failCount: summaryItem
+      ? summaryItem.failCount
+      : 0,
+    guides: getFailureGuides_(failure)
+  };
+}
+
+
+function guideRowToObject_(row, sheetRow) {
+  const values = row.map(
+    value => String(value ?? '').trim()
+  );
+
+  return {
+    sheetRow: sheetRow,
+    guideId: values[0] || '',
+    failureKey: values[1] || '',
+    failure: values[2] || '',
+    detail: values[3] || '',
+    author: values[4] || '',
+    date: values[5] || '',
+    time: values[6] || '',
+    imageFileId: values[7] || '',
+    imageUrl: values[8] || '',
+    imageName: values[9] || '',
+    updatedDate: values[10] || '',
+    updatedTime: values[11] || ''
+  };
+}
+
+
+function getFailureGuides_(failureValue) {
+  const ss = SpreadsheetApp.openById(
+    CONFIG.SPREADSHEET_ID
+  );
+
+  const sh = ensureFailureGuideSheet_(ss);
+  const lastRow = sh.getLastRow();
+
+  if (lastRow < 2) return [];
+
+  const rows = sh.getRange(
+    2,
+    1,
+    lastRow - 1,
+    FAILURE_GUIDE_HEADERS.length
+  ).getDisplayValues();
+
+  const requestedKey = normalizeFailureKey_(
+    failureValue || ''
+  );
+
+  return rows
+    .map((row, index) =>
+      guideRowToObject_(row, index + 2)
+    )
+    .filter(guide =>
+      guide.guideId &&
+      (
+        !requestedKey ||
+        normalizeFailureKey_(guide.failure) === requestedKey
+      )
+    )
+    .reverse();
+}
+
+
+function createFailureGuideId_(sh, now) {
+  const ymd = Utilities.formatDate(
+    now,
+    CONFIG.TIMEZONE,
+    'yyyyMMdd'
+  );
+
+  const prefix = 'FG-' + ymd + '-';
+  const lastRow = sh.getLastRow();
+  let maxSeq = 0;
+
+  if (lastRow >= 2) {
+    const ids = sh.getRange(
+      2,
+      1,
+      lastRow - 1,
+      1
+    ).getDisplayValues().flat();
+
+    ids.forEach(value => {
+      const id = String(value || '').trim();
+
+      if (!id.startsWith(prefix)) return;
+
+      const n = parseInt(
+        id.slice(prefix.length),
+        10
+      );
+
+      if (Number.isFinite(n)) {
+        maxSeq = Math.max(maxSeq, n);
+      }
+    });
+  }
+
+  return prefix +
+    String(maxSeq + 1).padStart(4, '0');
+}
+
+
+function saveFailureGuide_(p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+
+  let image = {
+    fileId: '',
+    url: '',
+    name: ''
+  };
+
+  try {
+    const ss = SpreadsheetApp.openById(
+      CONFIG.SPREADSHEET_ID
+    );
+
+    const sh = ensureFailureGuideSheet_(ss);
+
+    const failure = requireText_(
+      p.failure,
+      'Failure / Symptom',
+      1500
+    );
+
+    const detail = requireText_(
+      p.detail,
+      'วิธีแก้ไขแบบละเอียด',
+      12000
+    );
+
+    const author = optionalText_(
+      p.author,
+      120
+    );
+
+    const now = new Date();
+    const guideId = createFailureGuideId_(
+      sh,
+      now
+    );
+
+    image = saveImageIfProvided_(
+      guideId,
+      p
+    );
+
+    const dateText = Utilities.formatDate(
+      now,
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy'
+    );
+
+    const timeText = Utilities.formatDate(
+      now,
+      CONFIG.TIMEZONE,
+      'HH:mm:ss'
+    );
+
+    sh.appendRow([
+      clean_(guideId),
+      clean_(normalizeFailureKey_(failure)),
+      clean_(failure),
+      clean_(detail),
+      clean_(author),
+      dateText,
+      timeText,
+      clean_(image.fileId),
+      clean_(image.url),
+      clean_(image.name),
+      '',
+      ''
+    ]);
+
+    SpreadsheetApp.flush();
+
+    return {
+      guideId: guideId,
+      failure: failure,
+      imageFileId: image.fileId || ''
+    };
+
+  } catch (err) {
+    if (image.fileId) {
+      trashRepairImageSafely_(
+        image.fileId
+      );
+    }
+
+    throw err;
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+function optionalText_(value, maxLength) {
+  let text = String(
+    value ?? ''
+  ).trim();
+
+  if (text.length > maxLength) {
+    text = text.slice(
+      0,
+      maxLength
+    );
+  }
+
+  return text;
+}
+
+
+function findFailureGuideRow_(sh, guideIdValue) {
+  const guideId = String(
+    guideIdValue || ''
+  ).trim();
+
+  if (!guideId) {
+    throw new Error(
+      'ไม่พบ Guide ID'
+    );
+  }
+
+  const lastRow = sh.getLastRow();
+
+  if (lastRow < 2) {
+    throw new Error(
+      'ยังไม่มี Failure Guide'
+    );
+  }
+
+  const ids = sh.getRange(
+    2,
+    1,
+    lastRow - 1,
+    1
+  ).getDisplayValues().flat();
+
+  const matches = [];
+
+  ids.forEach((value, index) => {
+    if (
+      String(value || '').trim() === guideId
+    ) {
+      matches.push(index + 2);
+    }
+  });
+
+  if (!matches.length) {
+    throw new Error(
+      'ไม่พบ Guide ID: ' +
+      guideId
+    );
+  }
+
+  if (matches.length > 1) {
+    throw new Error(
+      'พบ Guide ID ซ้ำใน Failure_Guide: ' +
+      guideId +
+      ' กรุณาแก้ข้อมูลซ้ำก่อน'
+    );
+  }
+
+  return matches[0];
+}
+
+
+function adminUpdateFailureGuide_(p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+
+  let newImage = {
+    fileId: '',
+    url: '',
+    name: ''
+  };
+
+  try {
+    const ss = SpreadsheetApp.openById(
+      CONFIG.SPREADSHEET_ID
+    );
+
+    const sh = ensureFailureGuideSheet_(ss);
+
+    const rowNumber = findFailureGuideRow_(
+      sh,
+      p.guideId
+    );
+
+    const oldRow = sh.getRange(
+      rowNumber,
+      1,
+      1,
+      FAILURE_GUIDE_HEADERS.length
+    ).getDisplayValues()[0];
+
+    const oldGuide = guideRowToObject_(
+      oldRow,
+      rowNumber
+    );
+
+    const failure = requireText_(
+      p.failure,
+      'Failure / Symptom',
+      1500
+    );
+
+    const detail = requireText_(
+      p.detail,
+      'วิธีแก้ไขแบบละเอียด',
+      12000
+    );
+
+    const author = optionalText_(
+      p.author,
+      120
+    );
+
+    let fileId = oldGuide.imageFileId;
+    let imageUrl = oldGuide.imageUrl;
+    let imageName = oldGuide.imageName;
+    let oldImageToTrash = '';
+
+    if (String(p.imageBase64 || '').trim()) {
+      newImage = saveImageIfProvided_(
+        oldGuide.guideId,
+        p
+      );
+
+      oldImageToTrash = fileId;
+      fileId = newImage.fileId;
+      imageUrl = newImage.url;
+      imageName = newImage.name;
+
+    } else if (
+      String(p.removeImage || '') === 'true'
+    ) {
+      oldImageToTrash = fileId;
+      fileId = '';
+      imageUrl = '';
+      imageName = '';
+    }
+
+    const now = new Date();
+
+    const updatedDate = Utilities.formatDate(
+      now,
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy'
+    );
+
+    const updatedTime = Utilities.formatDate(
+      now,
+      CONFIG.TIMEZONE,
+      'HH:mm:ss'
+    );
+
+    sh.getRange(
+      rowNumber,
+      1,
+      1,
+      FAILURE_GUIDE_HEADERS.length
+    ).setValues([[
+      clean_(oldGuide.guideId),
+      clean_(normalizeFailureKey_(failure)),
+      clean_(failure),
+      clean_(detail),
+      clean_(author),
+      clean_(oldGuide.date),
+      clean_(oldGuide.time),
+      clean_(fileId),
+      clean_(imageUrl),
+      clean_(imageName),
+      updatedDate,
+      updatedTime
+    ]]);
+
+    SpreadsheetApp.flush();
+
+    if (
+      oldImageToTrash &&
+      oldImageToTrash !== fileId
+    ) {
+      trashRepairImageSafely_(
+        oldImageToTrash
+      );
+    }
+
+    return {
+      guideId: oldGuide.guideId,
+      updated: true
+    };
+
+  } catch (err) {
+    if (newImage.fileId) {
+      trashRepairImageSafely_(
+        newImage.fileId
+      );
+    }
+
+    throw err;
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+function adminDeleteFailureGuide_(p) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+
+  try {
+    const ss = SpreadsheetApp.openById(
+      CONFIG.SPREADSHEET_ID
+    );
+
+    const sh = ensureFailureGuideSheet_(ss);
+
+    const rowNumber = findFailureGuideRow_(
+      sh,
+      p.guideId
+    );
+
+    const row = sh.getRange(
+      rowNumber,
+      1,
+      1,
+      FAILURE_GUIDE_HEADERS.length
+    ).getDisplayValues()[0];
+
+    const guide = guideRowToObject_(
+      row,
+      rowNumber
+    );
+
+    sh.deleteRow(rowNumber);
+    SpreadsheetApp.flush();
+
+    if (guide.imageFileId) {
+      trashRepairImageSafely_(
+        guide.imageFileId
+      );
+    }
+
+    return {
+      guideId: guide.guideId,
+      deleted: true
+    };
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
 
 /* =========================================================
    MODEL
