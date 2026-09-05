@@ -200,13 +200,26 @@ function bindImageModal() {
 }
 
 function openImageModal(url, name, fileId) {
-  if (!url) return;
+  const id = normalizeDriveFileId(fileId) || extractDriveFileId(url);
+  const resolvedUrl = id ? buildDriveThumbnailUrl(id) : String(url || "").trim();
 
-  $("#modalImage").src = url;
+  if (!resolvedUrl) {
+    toast("ไม่พบ Image File ID / Image URL ของรายการนี้", "error");
+    return;
+  }
+
+  $("#modalImage").src = resolvedUrl;
   $("#modalImageName").textContent = name || "";
-  $("#openDriveImage").href = fileId
-    ? `https://drive.google.com/file/d/${encodeURIComponent(fileId)}/view`
-    : url;
+
+  const driveLink = $("#openDriveImage");
+
+  if (id) {
+    driveLink.href = buildDriveViewUrl(id);
+    driveLink.classList.remove("hidden");
+  } else {
+    driveLink.removeAttribute("href");
+    driveLink.classList.add("hidden");
+  }
 
   $("#imageModal").classList.remove("hidden");
   $("#imageModal").setAttribute("aria-hidden", "false");
@@ -216,6 +229,68 @@ function closeImageModal() {
   $("#imageModal").classList.add("hidden");
   $("#imageModal").setAttribute("aria-hidden", "true");
   $("#modalImage").removeAttribute("src");
+}
+
+
+function normalizeDriveFileId(value) {
+  const id = String(value || "").trim();
+
+  // Google Drive file IDs normally contain letters, digits, _ and -
+  if (!id || !/^[A-Za-z0-9_-]{10,}$/.test(id)) return "";
+
+  return id;
+}
+
+function extractDriveFileId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const patterns = [
+    /\/file\/d\/([A-Za-z0-9_-]{10,})/i,
+    /[?&]id=([A-Za-z0-9_-]{10,})/i,
+    /\/thumbnail\?id=([A-Za-z0-9_-]{10,})/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) return match[1];
+  }
+
+  return "";
+}
+
+function buildDriveThumbnailUrl(fileId) {
+  const id = normalizeDriveFileId(fileId);
+  return id
+    ? `https://drive.google.com/thumbnail?id=${encodeURIComponent(id)}&sz=w1200`
+    : "";
+}
+
+function buildDriveViewUrl(fileId) {
+  const id = normalizeDriveFileId(fileId);
+  return id
+    ? `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`
+    : "";
+}
+
+function resolveRecordImage(record) {
+  let fileId = normalizeDriveFileId(record?.imageFileId);
+  const rawUrl = String(record?.imageUrl || "").trim();
+
+  if (!fileId) {
+    fileId = extractDriveFileId(rawUrl);
+  }
+
+  const thumbnailUrl = fileId
+    ? buildDriveThumbnailUrl(fileId)
+    : rawUrl;
+
+  return {
+    fileId,
+    thumbnailUrl,
+    driveUrl: fileId ? buildDriveViewUrl(fileId) : "",
+    name: String(record?.imageName || "").trim()
+  };
 }
 
 function bindTabs() {
@@ -454,15 +529,18 @@ function renderHistory() {
       '<tr><td colspan="12" class="empty">ไม่พบข้อมูล</td></tr>';
   } else {
     body.innerHTML = filtered.map(r => {
-      const imageCell = r.imageUrl
+      const image = resolveRecordImage(r);
+
+      const imageCell = image.thumbnailUrl
         ? `<img class="history-thumb"
-              src="${escAttr(r.imageUrl)}"
-              alt="${escAttr(r.imageName || "Repair image")}"
+              src="${escAttr(image.thumbnailUrl)}"
+              alt="${escAttr(image.name || "Repair image")}"
               loading="lazy"
-              data-url="${escAttr(r.imageUrl)}"
-              data-name="${escAttr(r.imageName || "")}"
-              data-fileid="${escAttr(r.imageFileId || "")}">`
-        : '<span class="no-image">-</span>';
+              referrerpolicy="no-referrer"
+              data-url="${escAttr(image.thumbnailUrl)}"
+              data-name="${escAttr(image.name)}"
+              data-fileid="${escAttr(image.fileId)}">`
+        : '<span class="no-image">ไม่มีรูป</span>';
 
       return `
         <tr>
@@ -489,14 +567,24 @@ function renderHistory() {
 
       img.addEventListener("error", () => {
         img.style.display = "none";
-        const a = document.createElement("a");
-        a.textContent = "เปิดรูป";
-        a.target = "_blank";
-        a.rel = "noopener";
-        a.href = img.dataset.fileid
-          ? `https://drive.google.com/file/d/${encodeURIComponent(img.dataset.fileid)}/view`
-          : img.dataset.url;
-        img.parentElement.appendChild(a);
+
+        const fileId =
+          normalizeDriveFileId(img.dataset.fileid) ||
+          extractDriveFileId(img.dataset.url);
+
+        if (fileId) {
+          const a = document.createElement("a");
+          a.textContent = "เปิดรูปใน Google Drive";
+          a.target = "_blank";
+          a.rel = "noopener";
+          a.href = buildDriveViewUrl(fileId);
+          img.parentElement.appendChild(a);
+        } else {
+          const span = document.createElement("span");
+          span.className = "no-image";
+          span.textContent = "ไม่พบ Image File ID";
+          img.parentElement.appendChild(span);
+        }
       }, { once: true });
     });
   }
