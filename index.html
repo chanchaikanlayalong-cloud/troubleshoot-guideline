@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b2f6f" />
+  <title>troubleshoot guideline</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div>
+        <div class="eyebrow">TEST ENGINEERING · PRODUCTION SUPPORT</div>
+        <h1>troubleshoot guideline</h1>
+        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง สำหรับ TE CDBU4</p>
+      </div>
+      <div class="status" id="apiStatus">กำลังเชื่อมต่อ...</div>
+    </div>
+  </header>
+
+  <main class="container">
+    <nav class="tabs" aria-label="เมนูหลัก">
+      <button class="tab active" data-page="historyPage">
+        <span class="tab-main">ประวัติการซ่อม</span>
+        <span class="tab-sub">Repair History</span>
+      </button>
+      <button class="tab" data-page="formPage">
+        <span class="tab-main">บันทึกการซ่อม</span>
+        <span class="tab-sub">Repair Form</span>
+      </button>
+      <button class="tab" data-page="dashboardPage">
+        <span class="tab-main">Dashboard</span>
+        <span class="tab-sub">Failure Analysis</span>
+      </button>
+    </nav>
+
+    <section id="formPage" class="page">
+      <div class="card form-card">
+        <div class="card-title">
+          <div>
+            <h2>Repair Form</h2>
+            <p>กรอกข้อมูลการซ่อมและบันทึกลง Google Sheet</p>
+          </div>
+          <span class="pill">ATS1</span>
+        </div>
+
+        <form id="repairForm" autocomplete="off">
+          <section class="form-section">
+            <div class="section-heading">
+              <span class="section-no">01</span>
+              <div>
+                <h3>Machine Information</h3>
+                <p>ข้อมูลเครื่องและจุดทดสอบ</p>
+              </div>
+            </div>
+
+            <div class="form-grid equipment-grid">
+              <label>
+                <span>Model <b>*</b></span>
+                <input
+                  name="model"
+                  id="model"
+                  list="modelOptions"
+                  placeholder="เลือกหรือพิมพ์ Model"
+                  required
+                />
+                <datalist id="modelOptions"></datalist>
+              </label>
+
+              <label>
+                <span>Station <b>*</b></span>
+                <input name="station" id="station" placeholder="เช่น ATS1-01 / TP04" required />
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-heading">
+              <span class="section-no">02</span>
+              <div>
+                <h3>Failure & Repair</h3>
+                <p>รายละเอียดปัญหาและการดำเนินการแก้ไข</p>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label class="full">
+                <span>Failure / Symptom <b>*</b></span>
+                <span class="field-hint">อาการเสีย / ปัญหาที่พบ</span>
+                <textarea
+                  name="failure"
+                  id="failure"
+                  rows="3"
+                  placeholder="เช่น Test item 31 Fail, DMM read error, No communication, Fixture contact abnormal..."
+                  required></textarea>
+              </label>
+
+              <label class="full">
+                <span>Repair Action <b>*</b></span>
+                <span class="field-hint">วิธีตรวจสอบและวิธีแก้ปัญหา</span>
+                <textarea
+                  name="repairAction"
+                  id="repairAction"
+                  rows="4"
+                  placeholder="ระบุสิ่งที่ตรวจสอบ อะไหล่/จุดที่แก้ไข และผลหลังดำเนินการ..."
+                  required></textarea>
+              </label>
+
+              <label class="full image-field">
+                <span>Evidence / Repair Image <small>(Optional)</small></span>
+                <span class="field-hint">รูปอาการเสีย จุดที่ซ่อม หรือผลหลังซ่อม</span>
+                <div class="file-row">
+                  <input type="file" id="repairImage" accept="image/*" />
+                </div>
+                <div id="imagePreviewWrap" class="image-preview-wrap hidden">
+                  <img id="imagePreview" class="image-preview" alt="ตัวอย่างรูปก่อนบันทึก" />
+                  <button type="button" id="removeImageBtn" class="btn ghost small-btn">ลบรูป</button>
+                </div>
+                <small class="help-text">ไม่บังคับแนบรูป · รูปจะถูกย่อก่อน Upload และเก็บใน Google Drive</small>
+              </label>
+            </div>
+          </section>
+
+          <section class="form-section">
+            <div class="section-heading">
+              <span class="section-no">03</span>
+              <div>
+                <h3>Repair Timing & Owner</h3>
+                <p>เวลาซ่อมและผู้ดำเนินการ</p>
+              </div>
+            </div>
+
+            <div class="form-grid timing-grid">
+              <label>
+                <span>เริ่มซ่อม <b>*</b></span>
+                <input type="time" name="startRepair" id="startRepair" required />
+              </label>
+
+              <label>
+                <span>ซ่อมเสร็จ <b>*</b></span>
+                <input type="time" name="finishRepair" id="finishRepair" required />
+              </label>
+
+              <label>
+                <span>Repair Time (นาที)</span>
+                <input id="repairTime" value="" disabled />
+              </label>
+
+              <label>
+                <span>คนทำ <b>*</b></span>
+                <input name="repairBy" id="repairBy" placeholder="ชื่อผู้ซ่อม / TE Owner" required />
+              </label>
+            </div>
+          </section>
+
+          <div class="actions sticky-actions">
+            <button type="button" class="btn ghost" id="cancelBtn">ยกเลิก</button>
+            <button type="submit" class="btn primary" id="saveBtn">บันทึก</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <section id="historyPage" class="page active">
+      <div class="card history-card">
+        <div class="history-head">
+          <div>
+            <h2>Repair History</h2>
+            <p>ข้อมูลจาก Google Sheet และรูปจาก Google Drive</p>
+          </div>
+          <button class="btn ghost" id="refreshBtn">รีเฟรช</button>
+        </div>
+
+        <div class="filters">
+          <input id="searchBox" placeholder="ค้นหา Repair ID / Model / Station / Failure / Repair Action / คนทำ..." />
+          <select id="filterModel">
+            <option value="">ทุก Model</option>
+          </select>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Repair ID</th>
+                <th>วันที่</th>
+                <th>เวลา</th>
+                <th>Model</th>
+                <th>Station</th>
+                <th>Failure / Symptom</th>
+                <th>Repair Action</th>
+                <th>เริ่มซ่อม</th>
+                <th>ซ่อมเสร็จ</th>
+                <th>Repair Time (นาที)</th>
+                <th>คนทำ</th>
+                <th>รูป</th>
+              </tr>
+            </thead>
+            <tbody id="historyBody">
+              <tr><td colspan="12" class="empty">ยังไม่มีข้อมูล</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-footer">
+          <span id="recordCount">0 รายการ</span>
+        </div>
+      </div>
+    </section>
+
+    <section id="dashboardPage" class="page">
+      <div class="dashboard-grid">
+
+        <div class="card dashboard-filter-card">
+          <div class="dashboard-head">
+            <div>
+              <h2>Failure Dashboard</h2>
+              <p>วิเคราะห์หัวข้อ Failure จากข้อมูล Repair History</p>
+            </div>
+            <button class="btn ghost" id="dashboardRefreshBtn">รีเฟรช</button>
+          </div>
+
+          <div class="dashboard-filters">
+            <label>
+              <span>มุมมองเวลา</span>
+              <select id="dashboardPeriodType">
+                <option value="all">ALL</option>
+                <option value="day">รายวัน</option>
+                <option value="week">รายสัปดาห์</option>
+                <option value="month" selected>รายเดือน</option>
+                <option value="year">1 ปี</option>
+              </select>
+            </label>
+
+            <label id="dashboardDayWrap" class="dashboard-date-control hidden">
+              <span>เลือกวันที่</span>
+              <input type="date" id="dashboardDay" />
+            </label>
+
+            <label id="dashboardWeekWrap" class="dashboard-date-control hidden">
+              <span>เลือกสัปดาห์</span>
+              <input type="week" id="dashboardWeek" />
+            </label>
+
+            <label id="dashboardMonthWrap" class="dashboard-date-control">
+              <span>เลือกเดือน</span>
+              <input type="month" id="dashboardMonth" />
+            </label>
+
+            <label id="dashboardYearWrap" class="dashboard-date-control hidden">
+              <span>เลือกปี</span>
+              <select id="dashboardYear">
+                <option value="">เลือกปี</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Model</span>
+              <select id="dashboardModel">
+                <option value="">ทุก Model</option>
+              </select>
+            </label>
+
+            <label>
+              <span>Station</span>
+              <select id="dashboardStation">
+                <option value="">ทุก Station</option>
+              </select>
+            </label>
+
+            <label>
+              <span>จำนวน Top Failure</span>
+              <select id="topFailureCount">
+                <option value="0">0</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5" selected>5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+                <option value="9">9</option>
+                <option value="10">10</option>
+                <option value="11">11</option>
+                <option value="12">12</option>
+                <option value="13">13</option>
+                <option value="14">14</option>
+                <option value="15">15</option>
+                <option value="16">16</option>
+                <option value="17">17</option>
+                <option value="18">18</option>
+                <option value="19">19</option>
+                <option value="20">20</option>
+                <option value="21">21</option>
+                <option value="22">22</option>
+                <option value="23">23</option>
+                <option value="24">24</option>
+                <option value="25">25</option>
+                <option value="26">26</option>
+                <option value="27">27</option>
+                <option value="28">28</option>
+                <option value="29">29</option>
+                <option value="30">30</option>
+                <option value="31">31</option>
+                <option value="32">32</option>
+                <option value="33">33</option>
+                <option value="34">34</option>
+                <option value="35">35</option>
+                <option value="36">36</option>
+                <option value="37">37</option>
+                <option value="38">38</option>
+                <option value="39">39</option>
+                <option value="40">40</option>
+                <option value="41">41</option>
+                <option value="42">42</option>
+                <option value="43">43</option>
+                <option value="44">44</option>
+                <option value="45">45</option>
+                <option value="46">46</option>
+                <option value="47">47</option>
+                <option value="48">48</option>
+                <option value="49">49</option>
+                <option value="50">50</option>
+                <option value="51">51</option>
+                <option value="52">52</option>
+                <option value="53">53</option>
+                <option value="54">54</option>
+                <option value="55">55</option>
+                <option value="56">56</option>
+                <option value="57">57</option>
+                <option value="58">58</option>
+                <option value="59">59</option>
+                <option value="60">60</option>
+                <option value="61">61</option>
+                <option value="62">62</option>
+                <option value="63">63</option>
+                <option value="64">64</option>
+                <option value="65">65</option>
+                <option value="66">66</option>
+                <option value="67">67</option>
+                <option value="68">68</option>
+                <option value="69">69</option>
+                <option value="70">70</option>
+                <option value="71">71</option>
+                <option value="72">72</option>
+                <option value="73">73</option>
+                <option value="74">74</option>
+                <option value="75">75</option>
+                <option value="76">76</option>
+                <option value="77">77</option>
+                <option value="78">78</option>
+                <option value="79">79</option>
+                <option value="80">80</option>
+                <option value="81">81</option>
+                <option value="82">82</option>
+                <option value="83">83</option>
+                <option value="84">84</option>
+                <option value="85">85</option>
+                <option value="86">86</option>
+                <option value="87">87</option>
+                <option value="88">88</option>
+                <option value="89">89</option>
+                <option value="90">90</option>
+                <option value="91">91</option>
+                <option value="92">92</option>
+                <option value="93">93</option>
+                <option value="94">94</option>
+                <option value="95">95</option>
+                <option value="96">96</option>
+                <option value="97">97</option>
+                <option value="98">98</option>
+                <option value="99">99</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="dashboard-kpis">
+          <div class="kpi-card">
+            <span class="kpi-label">Repair Records</span>
+            <strong id="kpiTotalRecords">0</strong>
+            <span class="kpi-note">รายการในช่วงที่เลือก</span>
+          </div>
+
+          <div class="kpi-card">
+            <span class="kpi-label">Avg. Repair Time</span>
+            <strong><span id="kpiAvgRepairTime">0</span> <small>min</small></strong>
+            <span class="kpi-note">เวลาเฉลี่ยในการซ่อม</span>
+          </div>
+
+          <div class="kpi-card">
+            <span class="kpi-label">Models</span>
+            <strong id="kpiModels">0</strong>
+            <span class="kpi-note">จำนวน Model ที่พบ</span>
+          </div>
+
+          <div class="kpi-card">
+            <span class="kpi-label">Stations</span>
+            <strong id="kpiStations">0</strong>
+            <span class="kpi-note">จำนวน Station ที่พบ</span>
+          </div>
+        </div>
+
+        <div class="card dashboard-panel">
+          <div class="panel-head">
+            <div>
+              <h3>Top Failure</h3>
+              <p id="topFailureSubtitle">เรียง Failure ที่เกิดบ่อยที่สุด</p>
+            </div>
+          </div>
+
+          <div id="topFailureChart" class="failure-chart">
+            <div class="dashboard-empty">ยังไม่มีข้อมูลในช่วงที่เลือก</div>
+          </div>
+        </div>
+
+        <div class="card dashboard-panel">
+          <div class="panel-head">
+            <div>
+              <h3>Timeline</h3>
+              <p id="timelineSubtitle">จำนวน Repair Records ตามช่วงเวลา</p>
+            </div>
+          </div>
+
+          <div id="timelineChart" class="timeline-chart">
+            <div class="dashboard-empty">ยังไม่มีข้อมูลในช่วงที่เลือก</div>
+          </div>
+        </div>
+
+        <div class="card dashboard-panel full-span">
+          <div class="panel-head">
+            <div>
+              <h3>Failure Ranking</h3>
+              <p>รายละเอียดอันดับ Failure ในช่วงที่เลือก</p>
+            </div>
+          </div>
+
+          <div class="ranking-wrap">
+            <table class="ranking-table">
+              <thead>
+                <tr>
+                  <th>อันดับ</th>
+                  <th>Failure / Symptom</th>
+                  <th>จำนวน</th>
+                  <th>% ของทั้งหมด</th>
+                  <th>Avg. Repair Time</th>
+                </tr>
+              </thead>
+              <tbody id="failureRankingBody">
+                <tr><td colspan="5" class="empty">ยังไม่มีข้อมูล</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <div id="imageModal" class="image-modal hidden" aria-hidden="true">
+    <div class="image-modal-backdrop" id="imageModalBackdrop"></div>
+    <div class="image-modal-card">
+      <button type="button" id="closeImageModal" class="image-modal-close" aria-label="ปิด">×</button>
+      <img id="modalImage" alt="Repair image" />
+      <div id="modalImageName" class="modal-image-name"></div>
+      <a id="openDriveImage" class="drive-link" target="_blank" rel="noopener">เปิดใน Google Drive</a>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>
