@@ -239,3 +239,436 @@ Timeline:
 - 1–99 = แสดงตามจำนวนอันดับที่เลือก
 
 ไม่มีการเปลี่ยน Google Sheet schema
+
+
+---
+
+# Version 10 — Mobile Repair History Horizontal Table
+
+ปรับ Repair History บนมือถือ:
+
+- ไม่แสดงเป็น Card แนวตั้งแล้ว
+- ใช้ Table แนวนอนเหมือน Desktop
+- ใช้นิ้วเลื่อนซ้าย/ขวาได้
+- Header ของตาราง Sticky อยู่ด้านบน
+- `Repair ID` Sticky อยู่ด้านซ้าย เพื่อให้รู้ว่ากำลังดู Record ไหน
+- Search / Model Filter ยังอยู่ด้านบน
+- รองรับทั้ง Portrait และ Landscape
+
+ไม่มีการเปลี่ยน Google Sheet, Apps Script หรือข้อมูล Backend
+
+
+---
+
+# Version 11 — Google Drive Image Fix
+
+แก้ปัญหา URL แบบ:
+
+`https://drive.google.com/file/d//view`
+
+สาเหตุคือ `Image File ID` ว่างหรือหน้าเว็บไม่ได้รับ ID
+
+V11:
+- ตรวจ Image File ID ก่อนสร้างลิงก์
+- ถ้า ID ว่าง แต่ Image URL มี ID อยู่ จะดึง ID จาก URL อัตโนมัติ
+- ถ้ามี File ID แต่ Image URL ว่าง จะสร้าง Thumbnail URL จาก File ID
+- ไม่เปิดลิงก์ `/d//view` อีก
+- ถ้าไม่มี ID จริง แสดง `ไม่พบ Image File ID`
+- ไม่เปลี่ยนโครงสร้าง Google Sheet
+
+## ตรวจข้อมูลใน Repair_Log
+
+คอลัมน์รูปยังเป็น:
+
+- L = Image File ID
+- M = Image URL
+- N = Image Name
+
+ถ้ารายการมีรูป คอลัมน์ L ต้องมี Google Drive File ID
+
+
+---
+
+# Version 12 — Mobile Table + Correct Column Mapping + Image Fallback + Admin
+
+## 1. Mobile Repair History
+
+V12 บังคับ Repair History บนมือถือให้เป็น Table แนวนอนด้วย CSS Override ตอนท้ายไฟล์
+
+และ `index.html` ใช้:
+
+```html
+style.css?v=12
+app.js?v=12
+```
+
+เพื่อบังคับ Browser/Safari โหลดไฟล์ใหม่ ไม่ใช้ Cache เก่า
+
+## 2. แก้ข้อมูลใส่ผิดช่อง
+
+Backend ไม่อ่านข้อมูลจาก Column number แบบตายตัวอีกแล้ว
+
+V12 อ่านและเขียนตามชื่อ Header เช่น:
+
+- `Fail` → failure
+- `แก้ปัญหายังไง` → repairAction
+- `เริ่มซ่อม` → startRepair
+- `ซ่อมเสร็จ` → finishRepair
+- `Repair Time (นาที)` → repairTime
+- `คนทำ` → repairBy
+
+ดังนั้นแม้ลำดับ Column ไม่ตรงกับ Code รุ่นเก่า ข้อมูลใหม่จะไม่เลื่อนไปผิดช่อง
+
+> ถ้าข้อมูลเก่าถูกบันทึกลงเซลล์ผิดไปแล้ว ข้อมูลเดิมจะไม่ถูกย้ายอัตโนมัติ
+> ให้ใช้หน้า Admin ของ V12 แก้ไข Record เดิมได้
+
+## 3. Image
+
+ถ้า Google Workspace ไม่ยอมให้ GitHub โหลด Google Drive Thumbnail โดยตรง:
+
+1. เว็บลอง Drive Thumbnail ก่อน
+2. ถ้าโหลดไม่ได้ จะใช้ `action=imageData`
+3. Apps Script อ่านรูปจาก Drive ในนาม Owner
+4. ส่งรูปกลับเป็น Data URL ให้หน้าเว็บ
+
+จึงไม่จำเป็นต้อง Public Drive เสมอไปสำหรับการ Preview
+
+## 4. Admin
+
+เพิ่มหน้า `Admin`
+
+Login:
+
+- User: ใส่อะไรก็ได้
+- Password: `adminmin`
+
+Admin สามารถ:
+
+- Search Record
+- เลือก Record
+- แก้วันที่
+- แก้เวลา
+- แก้ Model
+- แก้ Station
+- แก้ Failure / Symptom
+- แก้ Repair Action
+- แก้เวลาเริ่ม/เสร็จ
+- แก้คนทำ
+- Repair Time คำนวณใหม่อัตโนมัติ
+- ลบรูปของ Record
+- ลบ Record ทั้งแถว
+
+การแก้ไข/ลบถูกตรวจ Password ซ้ำที่ Apps Script Backend
+
+## 5. Google Sheet
+
+V12 ไม่เพิ่ม ไม่ย้าย และไม่ลบ Column ใน Google Sheet
+
+`setup.gs` ใช้ตรวจสอบ Header และ Drive Folder เท่านั้น
+
+
+---
+
+# Version 13 — Recover Shifted Old Data + Drive Image
+
+จาก Sheet ที่เคยถูก Version เก่าทำให้ Header/Column เลื่อน V13 จะไม่แก้โครงสร้าง Sheet
+
+Backend จะ:
+
+1. หา `Image URL` จากข้อมูลจริงในแถว
+2. หา `Image File ID` จากช่องก่อนหน้า
+3. ไล่ย้อนกลับเพื่อระบุ:
+   - คนทำ
+   - Repair Time
+   - ซ่อมเสร็จ
+   - เริ่มซ่อม
+   - Repair Action
+   - Failure / Symptom
+4. ใช้ Mapping นี้กับ Repair History, Save ใหม่ และ Admin
+
+จึงสามารถอ่านข้อมูลเก่าที่หัว Column ไม่ตรงกับข้อมูลได้โดยไม่ต้องย้าย Column
+
+## ตรวจ V13
+
+หลัง Deploy Apps Script New Version เปิด:
+
+`YOUR_GAS_URL?action=health`
+
+ควรเห็น:
+
+```json
+{
+  "ok": true,
+  "message": "ATS1 Repair API V13 is running",
+  "inferredFromData": true,
+  "detectedColumns": {
+    ...
+    "imageFileId": 14,
+    "imageUrl": 15
+  }
+}
+```
+
+เลข Column อาจต่างกันตาม Sheet จริง
+
+## Cache
+
+Frontend ใช้:
+
+- `style.css?v=13`
+- `app.js?v=13`
+
+เพื่อบังคับมือถือโหลด CSS/JS ใหม่
+
+
+---
+
+# Version 14 — Reliable Admin Edit/Delete
+
+V14 แก้ Admin ที่ก่อนหน้านี้กดแล้วไม่รู้ว่า Apps Script ตอบอะไร เพราะ POST ใช้ `no-cors`
+
+## วิธีใหม่
+
+1. หน้าเว็บสร้าง `opId`
+2. ส่ง `adminUpdate` หรือ `adminDelete` ไป Apps Script
+3. Apps Script ทำงานและเก็บผลสำเร็จ/Error ไว้ใน Script Properties
+4. หน้าเว็บเรียก `adminOpStatus` กลับด้วย JSONP
+5. เว็บแสดง Error จริง เช่น:
+   - Admin password ไม่ถูกต้อง
+   - Repair ID ไม่พบ
+   - Backend ยังเป็น Version เก่า
+   - Apps Script deployment URL ไม่ตรง
+6. ถ้าสำเร็จจึง Reload History
+
+## Backend Version Check
+
+ก่อนเข้า Admin V14 จะเรียก:
+
+`?action=health`
+
+และต้องเห็น:
+
+```json
+"apiVersion": "V14"
+```
+
+ถ้าไม่ใช่ V14 หน้า Admin จะไม่ยอมเข้า และจะแจ้งให้ Deploy New version ก่อน
+
+## สิ่งที่ต้องทำ
+
+หลังแทน `Code.gs` ด้วย V14:
+
+1. Save
+2. Deploy
+3. Manage deployments
+4. Edit
+5. Version → New version
+6. Deploy
+
+ถ้าสร้าง Deployment ใหม่แทนการ Edit deployment เดิม ต้องเอา `/exec` URL ใหม่ไปใส่ใน `config.json`
+
+
+---
+
+# Version 15 — Row-by-row Recovery
+
+ปัญหาที่พบใน Sheet จริงคือข้อมูลเก่าแต่ละแถว Shift ไม่เท่ากัน
+
+V15 จึงไม่ใช้ Mapping เดียวทั้ง Sheet
+
+## วิธีอ่านแต่ละแถว
+
+หลัง Station ระบบจะ:
+
+1. หา Google Drive Image URL / File ID
+2. หาเวลา HH:MM สองค่าท้าย → เริ่มซ่อม / ซ่อมเสร็จ
+3. ค่าก่อนเวลา → Failure / Repair Action
+4. ค่าหลังเวลาซ่อมเสร็จ → Repair Time / คนทำ
+5. File ID / URL / Image Name อ่านจากตำแหน่งจริงของแถวนั้น
+
+## ข้อมูลใหม่
+
+ทุก Record ใหม่เขียนเป็นมาตรฐาน A:N:
+
+A Repair ID
+B วันที่
+C เวลา
+D Model
+E Station
+F Fail
+G แก้ปัญหายังไง
+H เริ่มซ่อม
+I ซ่อมเสร็จ
+J Repair Time (นาที)
+K คนทำ
+L Image File ID
+M Image URL
+N Image Name
+
+## Admin
+
+เพิ่มปุ่ม:
+
+`จัดข้อมูลเก่าให้ตรงช่อง`
+
+เมื่อกด ระบบจะ Parse ข้อมูลเก่าทีละแถว แล้ว Rewrite ให้เป็น A:N มาตรฐาน
+
+Admin Edit ก็จะ Normalize Record ที่แก้ไขอัตโนมัติ
+
+## Deploy
+
+ต้อง Deploy Code.gs V15 เป็น New version แล้ว Admin ต้องแสดง:
+
+`Backend: V15`
+
+
+---
+
+# Version 16 — Refresh + Code Review Fixes
+
+## Refresh
+
+หลังทำรายการต่อไปนี้ เว็บจะ Refresh Google Sheet ใหม่อัตโนมัติ:
+
+- บันทึก Repair
+- Admin Edit
+- Admin Delete
+- Normalize old data
+
+หน้า Repair History แสดง `รีเฟรชล่าสุด: HH:MM:SS`
+
+Admin table จะถูก Render ใหม่หลัง `loadHistory()` จึงไม่ค้างข้อมูลเก่าหลังแก้ไขหรือลบ
+
+## Save confirmation
+
+V15 ใช้ POST แบบ `no-cors` แล้วถือว่าสำเร็จทันที
+
+V16 ใช้ Operation ID และ Poll status จาก Apps Script เหมือน Admin
+จึง Reset Form หลัง Backend ยืนยันว่าบันทึกสำเร็จจริงเท่านั้น
+
+## Normalize backup
+
+ก่อนกด `จัดข้อมูลเก่าให้ตรงช่อง`
+ระบบจะสร้าง Backup Sheet อัตโนมัติ เช่น:
+
+`Backup_Repair_Log_20260905_142530`
+
+แล้วค่อย Normalize Repair_Log
+
+## Concurrency
+
+Admin Edit / Delete / Normalize ใช้ `LockService`
+เพื่อลดความเสี่ยงแก้หรือลบผิดแถวเมื่อมีหลายคนใช้งานพร้อมกัน
+
+## Google Drive safety
+
+`imageData` ถูกจำกัดให้อ่านได้เฉพาะไฟล์ที่อยู่ใน
+`ATS1_Repair_Images`
+
+ไม่สามารถส่ง File ID ของไฟล์อื่นใน Drive ของเจ้าของ Script
+เพื่อให้ Web App อ่านไฟล์นั้นได้
+
+## Operation status
+
+ผล Operation ไม่ถูกลบทันทีหลัง Poll ครั้งแรก
+เพื่อป้องกันกรณี response แรกหายแล้วเว็บค้าง pending
+
+Status เก่ากว่า 10 นาทีจะถูก cleanup อัตโนมัติ
+
+## Deploy
+
+Frontend และ Apps Script ต้องเป็น V16 ทั้งคู่
+
+Health check:
+
+`GAS_URL?action=health`
+
+ต้องมี:
+
+```json
+{
+  "ok": true,
+  "apiVersion": "V16"
+}
+```
+
+
+---
+
+# Version 18 — Backend Repair Owner Fix
+
+V18 ใช้ฐานจาก V16 และคงระบบเดิมทั้งหมด:
+
+- Auto Refresh
+- Admin Edit / Delete
+- Dashboard
+- Google Drive image
+- Normalize old data
+- Operation status
+- LockService
+- Backup ก่อน Normalize
+
+## ปัญหาที่แก้
+
+ตัวอย่างข้อมูลใน Sheet:
+
+```text
+H เริ่มซ่อม       = 15:06
+I ซ่อมเสร็จ       = 15:06
+J Repair Time      = ว่าง
+K คนทำ             = MIN
+```
+
+Logic เก่าจะมองค่าที่ไม่ว่างตัวแรกหลังซ่อมเสร็จเป็น Repair Time
+
+จึงกลายเป็น:
+
+```text
+repairTime = MIN
+repairBy   = ว่าง
+```
+
+แล้วภายหลังระบบคำนวณ Repair Time ใหม่เป็น 0 แต่ไม่ได้ย้าย MIN กลับมาเป็นคนทำ
+
+## Logic V18
+
+ค่าหลัง "ซ่อมเสร็จ" ถูกแยกตามชนิดข้อมูล:
+
+- ค่าที่เป็นตัวเลข >= 0 → Repair Time
+- ค่าที่ไม่ใช่ตัวเลข → คนทำ
+
+ถ้าไม่มี Repair Time ระบบคำนวณจาก:
+
+`เริ่มซ่อม → ซ่อมเสร็จ`
+
+ดังนั้น:
+
+```text
+15:06 → 15:06
+Repair Time = 0
+คนทำ = MIN
+```
+
+## Fallback
+
+ถ้า Parser ยังไม่ได้ `repairBy` แต่ Column K มีข้อความที่ไม่ใช่ตัวเลข
+V18 จะใช้ Column K เป็น `คนทำ`
+
+## Deploy
+
+Frontend และ Apps Script ต้องเป็น V18 ทั้งคู่
+
+Health check:
+
+```text
+GAS_URL?action=health
+```
+
+ต้องมี:
+
+```json
+{
+  "ok": true,
+  "apiVersion": "V18"
+}
+```

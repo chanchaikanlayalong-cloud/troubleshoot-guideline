@@ -1,7 +1,12 @@
+const FRONTEND_VERSION = 'V18';
 let APP_CONFIG = null;
 let GAS_URL = "";
 let allRecords = [];
 let selectedImage = null;
+let adminLoggedIn = false;
+let adminSessionUser = "";
+let adminSessionPassword = "";
+let adminSelectedRepairId = "";
 
 const $ = (s) => document.querySelector(s);
 
@@ -13,6 +18,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindForm();
   bindHistory();
   bindDashboard();
+  bindAdmin();
 
   try {
     await loadConfig();
@@ -31,8 +37,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     return;
   }
 
-  await loadModels();
-  await loadHistory();
+  await refreshAllData();
   initializeDashboardDefaults();
   renderDashboard();
 });
@@ -138,7 +143,7 @@ function compressImage(file) {
       const img = new Image();
 
       img.onload = () => {
-        const maxDimension = 1400;
+        const maxDimension = 1000;
         const scale = Math.min(1, maxDimension / Math.max(img.width, img.height));
         const width = Math.max(1, Math.round(img.width * scale));
         const height = Math.max(1, Math.round(img.height * scale));
@@ -150,16 +155,16 @@ function compressImage(file) {
         const ctx = canvas.getContext("2d");
         ctx.drawImage(img, 0, 0, width, height);
 
-        let quality = 0.78;
+        let quality = 0.72;
         let dataUrl = canvas.toDataURL("image/jpeg", quality);
 
         // ลดคุณภาพเพิ่มถ้ารูปหลังย่อยังใหญ่ เพื่อให้ส่งผ่าน Apps Script ได้คล่อง
-        while (dataUrl.length > 1_600_000 && quality > 0.48) {
+        while (dataUrl.length > 900_000 && quality > 0.42) {
           quality -= 0.08;
           dataUrl = canvas.toDataURL("image/jpeg", quality);
         }
 
-        if (dataUrl.length > 2_400_000) {
+        if (dataUrl.length > 1_400_000) {
           reject(new Error("รูปหลังย่อยังใหญ่เกินไป"));
           return;
         }
@@ -199,20 +204,18 @@ function bindImageModal() {
   });
 }
 
-function openImageModal(url, name, fileId) {
+async function openImageModal(url, name, fileId) {
   const id = normalizeDriveFileId(fileId) || extractDriveFileId(url);
-  const resolvedUrl = id ? buildDriveThumbnailUrl(id) : String(url || "").trim();
+  let resolvedUrl = id ? buildDriveThumbnailUrl(id) : String(url || "").trim();
 
-  if (!resolvedUrl) {
+  if (!resolvedUrl && !id) {
     toast("ไม่พบ Image File ID / Image URL ของรายการนี้", "error");
     return;
   }
 
-  $("#modalImage").src = resolvedUrl;
   $("#modalImageName").textContent = name || "";
 
   const driveLink = $("#openDriveImage");
-
   if (id) {
     driveLink.href = buildDriveViewUrl(id);
     driveLink.classList.remove("hidden");
@@ -223,6 +226,22 @@ function openImageModal(url, name, fileId) {
 
   $("#imageModal").classList.remove("hidden");
   $("#imageModal").setAttribute("aria-hidden", "false");
+
+  $("#modalImage").src = resolvedUrl || "";
+
+  if (id) {
+    $("#modalImage").onerror = async () => {
+      $("#modalImage").onerror = null;
+
+      try {
+        const dataUrl = await getDriveImageData(id);
+        $("#modalImage").src = dataUrl;
+      } catch (err) {
+        console.error(err);
+        toast("โหลดรูปไม่ได้ กรุณาตรวจ Image File ID / Drive permission", "error");
+      }
+    };
+  }
 }
 
 function closeImageModal() {
@@ -274,12 +293,11 @@ function buildDriveViewUrl(fileId) {
 }
 
 function resolveRecordImage(record) {
-  let fileId = normalizeDriveFileId(record?.imageFileId);
   const rawUrl = String(record?.imageUrl || "").trim();
 
-  if (!fileId) {
-    fileId = extractDriveFileId(rawUrl);
-  }
+  let fileId =
+    normalizeDriveFileId(record?.imageFileId) ||
+    extractDriveFileId(rawUrl);
 
   const thumbnailUrl = fileId
     ? buildDriveThumbnailUrl(fileId)
@@ -293,6 +311,53 @@ function resolveRecordImage(record) {
   };
 }
 
+
+async function getDriveImageData(fileId) {
+  const id = normalizeDriveFileId(fileId);
+  if (!id) throw new Error("Invalid Image File ID");
+
+  const res = await jsonp("imageData", { fileId: id });
+
+  if (!res.ok || !res.dataUrl) {
+    throw new Error(res.error || "โหลดรูปผ่าน Apps Script ไม่สำเร็จ");
+  }
+
+  return res.dataUrl;
+}
+
+async function loadHistoryImageFallback(img) {
+  const id =
+    normalizeDriveFileId(img.dataset.fileid) ||
+    extractDriveFileId(img.dataset.url);
+
+  if (!id) {
+    img.style.display = "none";
+    const span = document.createElement("span");
+    span.className = "no-image";
+    span.textContent = "ไม่พบ Image File ID";
+    img.parentElement.appendChild(span);
+    return;
+  }
+
+  try {
+    const dataUrl = await getDriveImageData(id);
+    img.onerror = null;
+    img.src = dataUrl;
+    img.dataset.url = dataUrl;
+    img.style.display = "";
+  } catch (err) {
+    console.error(err);
+    img.style.display = "none";
+
+    const a = document.createElement("a");
+    a.textContent = "เปิดรูปใน Google Drive";
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.href = buildDriveViewUrl(id);
+    img.parentElement.appendChild(a);
+  }
+}
+
 function bindTabs() {
   document.querySelectorAll(".tab").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -303,12 +368,15 @@ function bindTabs() {
       $("#" + btn.dataset.page).classList.add("active");
 
       if (btn.dataset.page === "historyPage" && isConfigured()) {
-        loadHistory();
+        refreshAllData();
       }
 
       if (btn.dataset.page === "dashboardPage") {
-        initializeDashboardOptions();
-        renderDashboard();
+        refreshAllData();
+      }
+
+      if (btn.dataset.page === "adminPage" && adminLoggedIn) {
+        refreshAllData();
       }
     });
   });
@@ -345,8 +413,7 @@ function bindForm() {
     saveBtn.textContent = selectedImage ? "กำลัง Upload รูปและบันทึก..." : "กำลังบันทึก...";
 
     try {
-      const body = new URLSearchParams({
-        action: "save",
+      const result = await sendSaveOperation({
         model: $("#model").value.trim(),
         station: $("#station").value.trim(),
         failure: $("#failure").value.trim(),
@@ -360,26 +427,24 @@ function bindForm() {
         imageBase64: selectedImage ? selectedImage.base64 : ""
       });
 
-      await fetch(GAS_URL, {
-        method: "POST",
-        mode: "no-cors",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
-        },
-        body
-      });
-
-      toast("ส่งข้อมูลไปยัง Google Sheet แล้ว", "success");
       resetForm();
 
-      setTimeout(() => {
-        loadModels();
-        loadHistory();
-      }, 1500);
+      await waitForRecordState(
+        result.repairId,
+        record => Boolean(record)
+      );
+
+      toast(
+        `บันทึกเรียบร้อย ${result.repairId || ""}`.trim(),
+        "success"
+      );
 
     } catch (err) {
       console.error(err);
-      toast("ส่งข้อมูลไม่สำเร็จ กรุณาตรวจสอบ Apps Script", "error");
+      toast(
+        err.message || "บันทึกไม่สำเร็จ กรุณาตรวจสอบ Apps Script",
+        "error"
+      );
     } finally {
       saveBtn.disabled = false;
       saveBtn.textContent = "บันทึก";
@@ -401,9 +466,8 @@ function resetForm() {
 }
 
 function bindHistory() {
-  $("#refreshBtn").addEventListener("click", () => {
-    loadModels();
-    loadHistory();
+  $("#refreshBtn").addEventListener("click", async () => {
+    await refreshAllData({ showToast: true });
   });
   $("#searchBox").addEventListener("input", renderHistory);
   $("#filterModel").addEventListener("change", renderHistory);
@@ -468,11 +532,13 @@ async function loadModels() {
     }
 
     setStatus("เชื่อมต่อ Google Sheet แล้ว", true);
+    return true;
 
   } catch (err) {
     console.error(err);
     setStatus("เชื่อมต่อไม่ได้", false);
     fillModelFallback();
+    return false;
   }
 }
 
@@ -496,15 +562,119 @@ async function loadHistory() {
     renderHistory();
     initializeDashboardOptions();
     renderDashboard();
+
+    if (adminLoggedIn) {
+      renderAdminTable();
+    }
+
+    updateLastRefreshTime();
     setStatus("เชื่อมต่อ Google Sheet แล้ว", true);
+    return true;
 
   } catch (err) {
     console.error(err);
     body.innerHTML =
       '<tr><td colspan="12" class="empty">โหลดข้อมูลไม่สำเร็จ</td></tr>';
     setStatus("เชื่อมต่อไม่ได้", false);
+    return false;
   }
 }
+
+
+let refreshInProgress = false;
+
+async function refreshAllData(options = {}) {
+  const { showToast = false } = options;
+
+  if (!isConfigured()) {
+    if (showToast) toast("ยังไม่ได้ตั้งค่า Apps Script URL", "error");
+    return false;
+  }
+
+  if (refreshInProgress) return false;
+
+  refreshInProgress = true;
+  setRefreshBusy(true);
+
+  try {
+    const [modelsOk, historyOk] = await Promise.all([
+      loadModels(),
+      loadHistory()
+    ]);
+
+    const ok = modelsOk !== false && historyOk !== false;
+
+    if (showToast) {
+      toast(
+        ok ? "รีเฟรชข้อมูลแล้ว" : "รีเฟรชข้อมูลไม่ครบ กรุณาลองอีกครั้ง",
+        ok ? "success" : "error"
+      );
+    }
+
+    return ok;
+
+  } finally {
+    refreshInProgress = false;
+    setRefreshBusy(false);
+  }
+}
+
+function setRefreshBusy(busy) {
+  const buttons = [
+    $("#refreshBtn"),
+    $("#adminReloadBtn"),
+    $("#dashboardRefreshBtn")
+  ].filter(Boolean);
+
+  buttons.forEach(btn => {
+    if (busy) {
+      if (!btn.dataset.originalText) {
+        btn.dataset.originalText = btn.textContent;
+      }
+
+      btn.disabled = true;
+      btn.textContent = "กำลังรีเฟรช...";
+
+    } else {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.originalText || "รีเฟรช";
+    }
+  });
+}
+
+function updateLastRefreshTime() {
+  const el = $("#lastRefreshText");
+  if (!el) return;
+
+  const now = new Date();
+
+  el.textContent =
+    "รีเฟรชล่าสุด: " +
+    now.toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    });
+}
+
+async function waitForRecordState(repairId, predicate, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    await refreshAllData();
+
+    const record = allRecords.find(
+      r => String(r.repairId) === String(repairId)
+    );
+
+    if (predicate(record)) {
+      return record || null;
+    }
+
+    await sleep(300 + i * 200);
+  }
+
+  return null;
+}
+
 
 function renderHistory() {
   const q = $("#searchBox").value.trim().toLowerCase();
@@ -566,25 +736,7 @@ function renderHistory() {
       });
 
       img.addEventListener("error", () => {
-        img.style.display = "none";
-
-        const fileId =
-          normalizeDriveFileId(img.dataset.fileid) ||
-          extractDriveFileId(img.dataset.url);
-
-        if (fileId) {
-          const a = document.createElement("a");
-          a.textContent = "เปิดรูปใน Google Drive";
-          a.target = "_blank";
-          a.rel = "noopener";
-          a.href = buildDriveViewUrl(fileId);
-          img.parentElement.appendChild(a);
-        } else {
-          const span = document.createElement("span");
-          span.className = "no-image";
-          span.textContent = "ไม่พบ Image File ID";
-          img.parentElement.appendChild(span);
-        }
+        loadHistoryImageFallback(img);
       }, { once: true });
     });
   }
@@ -613,9 +765,7 @@ function bindDashboard() {
   $("#topFailureCount").addEventListener("change", renderDashboard);
 
   $("#dashboardRefreshBtn").addEventListener("click", async () => {
-    await loadHistory();
-    initializeDashboardOptions();
-    renderDashboard();
+    await refreshAllData({ showToast: true });
   });
 }
 
@@ -1073,6 +1223,512 @@ function uniqueSorted(values) {
   return Array.from(new Set(values)).sort((a, b) =>
     a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
   );
+}
+
+
+
+/* =========================
+   ADMIN
+========================= */
+
+function bindAdmin() {
+  $("#adminLoginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const username = $("#adminUsername").value.trim();
+    const password = $("#adminPassword").value;
+
+    if (!username) {
+      toast("กรุณาใส่ User", "error");
+      return;
+    }
+
+    const hash = await sha256(password);
+
+    // SHA-256 of password: adminmin
+    if (hash !== "74da6b097821eee22b14dff779bf7ed422b1bac41e98e356a176e1f50f36a3a4") {
+      toast("Password ไม่ถูกต้อง", "error");
+      return;
+    }
+
+    const backend = await checkAdminBackendVersion();
+
+    if (!backend.ok) {
+      toast(backend.error, "error");
+      return;
+    }
+
+    adminLoggedIn = true;
+    adminSessionUser = username;
+    adminSessionPassword = password;
+
+    $("#adminLoginCard").classList.add("hidden");
+    $("#adminWorkspace").classList.remove("hidden");
+    $("#adminSessionUser").textContent = `User: ${username}`;
+    $("#adminBackendStatus").textContent = `Backend: ${backend.version}`;
+    $("#adminBackendStatus").classList.add("ok");
+
+    renderAdminTable();
+    toast("เข้าสู่ Admin แล้ว", "success");
+  });
+
+  $("#adminLogoutBtn").addEventListener("click", logoutAdmin);
+  $("#adminReloadBtn").addEventListener("click", async () => {
+    await refreshAllData({ showToast: true });
+  });
+
+  $("#adminNormalizeBtn").addEventListener("click", normalizeAllAdminRecords);
+
+  $("#adminSearchBox").addEventListener("input", renderAdminTable);
+  $("#adminClearEditBtn").addEventListener("click", clearAdminEditor);
+
+  $("#adminEditStartRepair").addEventListener("input", updateAdminRepairTimeHint);
+  $("#adminEditFinishRepair").addEventListener("input", updateAdminRepairTimeHint);
+
+  $("#adminEditForm").addEventListener("submit", saveAdminEdit);
+}
+
+async function sha256(text) {
+  const data = new TextEncoder().encode(String(text || ""));
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function checkAdminBackendVersion() {
+  try {
+    const res = await jsonp("health");
+
+    const version = String(
+      res.apiVersion ||
+      String(res.message || "").match(/V\d+/)?.[0] ||
+      ""
+    );
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.error || "Backend health check ไม่สำเร็จ"
+      };
+    }
+
+    if (version !== "V18") {
+      return {
+        ok: false,
+        error:
+          `Frontend V18 แต่ Apps Script ยังเป็น ${version || "เวอร์ชันเก่า"} ` +
+          `กรุณา Deploy → Manage deployments → Edit → New version → Deploy`
+      };
+    }
+
+    return {
+      ok: true,
+      version
+    };
+
+  } catch (err) {
+    return {
+      ok: false,
+      error: "ตรวจสอบ Apps Script Backend ไม่สำเร็จ"
+    };
+  }
+}
+
+
+function createAdminOpId() {
+  return (
+    "op_" +
+    Date.now().toString(36) +
+    "_" +
+    Math.random().toString(36).slice(2, 12)
+  );
+}
+
+
+
+async function pollOperationStatus(opId) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await sleep(attempt === 0 ? 300 : 450);
+
+    let status;
+
+    try {
+      status = await jsonp("adminOpStatus", { opId });
+    } catch (err) {
+      continue;
+    }
+
+    if (status && status.error && /Unknown action/i.test(status.error)) {
+      throw new Error(
+        "Apps Script ที่ใช้อยู่ยังไม่ใช่ V18 กรุณา Deploy New version"
+      );
+    }
+
+    if (status && status.pending === true) {
+      continue;
+    }
+
+    if (status && status.pending === false) {
+      if (!status.ok) {
+        throw new Error(status.error || "Operation failed");
+      }
+
+      return status;
+    }
+  }
+
+  throw new Error(
+    "ไม่ได้รับผลตอบกลับจาก Apps Script ภายในเวลาที่กำหนด " +
+    "กรุณาตรวจ config.json และ Deployment"
+  );
+}
+
+async function sendSaveOperation(values) {
+  const opId = createAdminOpId();
+
+  const body = new URLSearchParams({
+    action: "save",
+    opId,
+    ...values
+  });
+
+  await fetch(GAS_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body
+  });
+
+  return pollOperationStatus(opId);
+}
+
+
+async function sendAdminOperation(action, values) {
+  const opId = createAdminOpId();
+
+  const body = new URLSearchParams({
+    action,
+    opId,
+    adminPassword: adminSessionPassword,
+    ...values
+  });
+
+  await fetch(GAS_URL, {
+    method: "POST",
+    mode: "no-cors",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+    },
+    body
+  });
+
+  return pollOperationStatus(opId);
+}
+
+function logoutAdmin() {
+  adminLoggedIn = false;
+  adminSessionUser = "";
+  adminSessionPassword = "";
+  adminSelectedRepairId = "";
+
+  $("#adminPassword").value = "";
+  $("#adminWorkspace").classList.add("hidden");
+  $("#adminLoginCard").classList.remove("hidden");
+  clearAdminEditor();
+}
+
+function renderAdminTable() {
+  if (!adminLoggedIn) return;
+
+  const q = $("#adminSearchBox").value.trim().toLowerCase();
+
+  const records = allRecords.filter(r => {
+    const blob = [
+      r.repairId, r.model, r.station, r.failure,
+      r.repairAction, r.repairBy
+    ].join(" ").toLowerCase();
+
+    return !q || blob.includes(q);
+  });
+
+  $("#adminRecordCount").textContent = `${records.length} รายการ`;
+
+  const body = $("#adminTableBody");
+
+  if (!records.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty">ไม่พบข้อมูล</td></tr>';
+    return;
+  }
+
+  body.innerHTML = records.map(r => `
+    <tr>
+      <td><strong>${esc(r.repairId)}</strong></td>
+      <td>${esc(r.model)}</td>
+      <td>${esc(r.station)}</td>
+      <td>${esc(r.failure)}</td>
+      <td>${esc(r.repairBy)}</td>
+      <td class="admin-actions-cell">
+        <button type="button"
+          class="admin-edit-btn"
+          data-id="${escAttr(r.repairId)}">แก้ไข</button>
+        <button type="button"
+          class="admin-delete-btn"
+          data-id="${escAttr(r.repairId)}">ลบ</button>
+      </td>
+    </tr>
+  `).join("");
+
+  document.querySelectorAll(".admin-edit-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const record = allRecords.find(r => String(r.repairId) === btn.dataset.id);
+      if (record) selectAdminRecord(record);
+    });
+  });
+
+  document.querySelectorAll(".admin-delete-btn").forEach(btn => {
+    btn.addEventListener("click", () => deleteAdminRecord(btn.dataset.id));
+  });
+}
+
+function selectAdminRecord(record) {
+  adminSelectedRepairId = String(record.repairId || "");
+
+  $("#adminEditRepairId").value = record.repairId || "";
+  $("#adminEditDate").value = record.date || "";
+  $("#adminEditTime").value = record.time || "";
+  $("#adminEditModel").value = record.model || "";
+  $("#adminEditStation").value = record.station || "";
+  $("#adminEditFailure").value = record.failure || "";
+  $("#adminEditRepairAction").value = record.repairAction || "";
+  $("#adminEditStartRepair").value = normalizeTimeForInput(record.startRepair);
+  $("#adminEditFinishRepair").value = normalizeTimeForInput(record.finishRepair);
+  $("#adminEditRepairBy").value = record.repairBy || "";
+  $("#adminRemoveImage").checked = false;
+
+  const image = resolveRecordImage(record);
+
+  if (image.fileId || image.thumbnailUrl) {
+    $("#adminCurrentImageWrap").classList.remove("hidden");
+    $("#adminCurrentImage").dataset.fileid = image.fileId || "";
+    $("#adminCurrentImage").src = image.thumbnailUrl || "";
+
+    $("#adminCurrentImage").onerror = async () => {
+      const id = normalizeDriveFileId($("#adminCurrentImage").dataset.fileid);
+
+      if (!id) {
+        $("#adminCurrentImage").style.display = "none";
+        return;
+      }
+
+      try {
+        $("#adminCurrentImage").onerror = null;
+        $("#adminCurrentImage").src = await getDriveImageData(id);
+      } catch (err) {
+        console.error(err);
+        $("#adminCurrentImage").style.display = "none";
+      }
+    };
+  } else {
+    $("#adminCurrentImageWrap").classList.add("hidden");
+    $("#adminCurrentImage").removeAttribute("src");
+  }
+
+  $("#adminSaveEditBtn").disabled = false;
+  updateAdminRepairTimeHint();
+
+  if (window.innerWidth < 900) {
+    $("#adminEditForm").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+function normalizeTimeForInput(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2}):(\d{2})/);
+
+  if (!match) return "";
+
+  return `${String(Number(match[1])).padStart(2, "0")}:${match[2]}`;
+}
+
+function updateAdminRepairTimeHint() {
+  const start = $("#adminEditStartRepair").value;
+  const finish = $("#adminEditFinishRepair").value;
+
+  if (!start || !finish) {
+    $("#adminSaveEditBtn").title = "Repair Time จะว่างถ้าไม่ได้กรอกเวลาเริ่ม/เสร็จครบ";
+    return;
+  }
+
+  const minutes = calculateRepairMinutes(start, finish);
+  $("#adminSaveEditBtn").title =
+    minutes === null ? "" : `Repair Time หลังบันทึก = ${minutes} นาที`;
+}
+
+function clearAdminEditor() {
+  adminSelectedRepairId = "";
+  $("#adminEditForm").reset();
+  $("#adminEditRepairId").value = "";
+  $("#adminCurrentImageWrap").classList.add("hidden");
+  $("#adminCurrentImage").removeAttribute("src");
+  $("#adminSaveEditBtn").disabled = true;
+}
+
+async function saveAdminEdit(e) {
+  e.preventDefault();
+
+  if (!adminLoggedIn || !adminSelectedRepairId) {
+    toast("กรุณาเลือก Record ที่ต้องการแก้ไข", "error");
+    return;
+  }
+
+  const start = $("#adminEditStartRepair").value;
+  const finish = $("#adminEditFinishRepair").value;
+
+  if ((start && !finish) || (!start && finish)) {
+    toast("ถ้ากรอกเวลา ต้องกรอกทั้งเริ่มซ่อมและซ่อมเสร็จ", "error");
+    return;
+  }
+
+  const btn = $("#adminSaveEditBtn");
+  btn.disabled = true;
+  btn.textContent = "กำลังบันทึก...";
+
+  try {
+    await sendAdminOperation("adminUpdate", {
+      repairId: adminSelectedRepairId,
+      date: $("#adminEditDate").value.trim(),
+      time: $("#adminEditTime").value.trim(),
+      model: $("#adminEditModel").value.trim(),
+      station: $("#adminEditStation").value.trim(),
+      failure: $("#adminEditFailure").value.trim(),
+      repairAction: $("#adminEditRepairAction").value.trim(),
+      startRepair: start,
+      finishRepair: finish,
+      repairBy: $("#adminEditRepairBy").value.trim(),
+      removeImage: $("#adminRemoveImage").checked ? "true" : "false"
+    });
+
+    const updated = await waitForRecordState(
+      adminSelectedRepairId,
+      record => Boolean(record)
+    );
+
+    if (updated) {
+      selectAdminRecord(updated);
+      renderAdminTable();
+      toast("แก้ไขข้อมูลเรียบร้อย และรีเฟรชแล้ว", "success");
+    } else {
+      toast("แก้ไขสำเร็จ แต่รีเฟรชข้อมูลไม่ทัน กรุณากดรีเฟรช", "error");
+    }
+
+  } catch (err) {
+    console.error(err);
+    toast(err.message || "แก้ไขข้อมูลไม่สำเร็จ", "error");
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "บันทึกการแก้ไข";
+  }
+}
+
+async function normalizeAllAdminRecords() {
+  if (!adminLoggedIn) return;
+
+  const confirmed = confirm(
+    "จัดข้อมูลเก่าทั้งหมดให้ตรงช่อง A:N หรือไม่?\n\n" +
+    "ระบบจะอ่านแต่ละแถวก่อน แล้วเขียนกลับเป็น:\n" +
+    "Repair ID / วันที่ / เวลา / Model / Station / Failure / Repair Action / " +
+    "เริ่มซ่อม / ซ่อมเสร็จ / Repair Time / คนทำ / Image File ID / Image URL / Image Name\n\n" +
+    "แนะนำให้ทำครั้งเดียวหลังอัปเดต V15"
+  );
+
+  if (!confirmed) return;
+
+  const btn = $("#adminNormalizeBtn");
+  btn.disabled = true;
+  btn.textContent = "กำลังจัดข้อมูล...";
+
+  try {
+    const status = await sendAdminOperation(
+      "adminNormalizeAll",
+      {}
+    );
+
+    await refreshAllData();
+    clearAdminEditor();
+
+    const backupText = status.backupSheet
+      ? ` · Backup: ${status.backupSheet}`
+      : "";
+
+    toast(
+      `จัดข้อมูลเรียบร้อย ${status.normalizedRows || 0} รายการ${backupText}`,
+      "success"
+    );
+
+  } catch (err) {
+    console.error(err);
+    toast(
+      err.message || "จัดข้อมูลไม่สำเร็จ",
+      "error"
+    );
+
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "จัดข้อมูลเก่าให้ตรงช่อง";
+  }
+}
+
+
+async function deleteAdminRecord(repairId) {
+  if (!adminLoggedIn) return;
+
+  const record = allRecords.find(r => String(r.repairId) === String(repairId));
+  const label = record
+    ? `${record.repairId}\n${record.model} / ${record.station}`
+    : repairId;
+
+  if (!confirm(`ต้องการลบ Record นี้หรือไม่?\n\n${label}\n\nการลบจะลบแถวจาก Google Sheet`)) {
+    return;
+  }
+
+  try {
+    await sendAdminOperation("adminDelete", {
+      repairId: String(repairId)
+    });
+
+    await waitForRecordState(
+      repairId,
+      record => !record
+    );
+
+    const stillExists = allRecords.some(
+      r => String(r.repairId) === String(repairId)
+    );
+
+    if (!stillExists) {
+      if (adminSelectedRepairId === String(repairId)) {
+        clearAdminEditor();
+      }
+
+      renderAdminTable();
+      toast("ลบ Record เรียบร้อย และรีเฟรชแล้ว", "success");
+    } else {
+      toast("ลบสำเร็จแต่หน้าเว็บยังเห็น Record อยู่ กรุณากดรีเฟรช", "error");
+    }
+
+  } catch (err) {
+    console.error(err);
+    toast(err.message || "ลบข้อมูลไม่สำเร็จ", "error");
+  }
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function setStatus(text, ok) {

@@ -4,16 +4,16 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
-  <title>ATS1 Repair Record</title>
-  <link rel="stylesheet" href="style.css" />
+  <title>Troubleshoot Guideline</title>
+  <link rel="stylesheet" href="style.css?v=18" />
 </head>
 <body>
   <header class="topbar">
     <div class="topbar-inner">
       <div>
-        <div class="eyebrow">TEST ENGINEERING · PRODUCTION SUPPORT</div>
-        <h1>ATS1 Repair Record</h1>
-        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง ATS1 สำหรับ Production</p>
+        <div class="eyebrow">TEST ENGINEERING · CDBU4</div>
+        <h1>troubleshoot guideline</h1>
+        <p>บันทึกและติดตามประวัติการซ่อมเครื่อง TE</p>
       </div>
       <div class="status" id="apiStatus">กำลังเชื่อมต่อ...</div>
     </div>
@@ -32,6 +32,10 @@
       <button class="tab" data-page="dashboardPage">
         <span class="tab-main">Dashboard</span>
         <span class="tab-sub">Failure Analysis</span>
+      </button>
+      <button class="tab" data-page="adminPage">
+        <span class="tab-main">Admin</span>
+        <span class="tab-sub">Edit / Delete</span>
       </button>
     </nav>
 
@@ -204,6 +208,7 @@
         </div>
 
         <div class="table-footer">
+          <span id="lastRefreshText">รีเฟรชล่าสุด: -</span>
           <span id="recordCount">0 รายการ</span>
         </div>
       </div>
@@ -458,6 +463,161 @@
       </div>
     </section>
 
+
+    <section id="adminPage" class="page">
+      <div id="adminLoginCard" class="card admin-login-card">
+        <div class="card-title">
+          <div>
+            <h2>Admin</h2>
+            <p>เข้าสู่ระบบเพื่อแก้ไขหรือลบ Repair Record</p>
+          </div>
+          <span class="pill">ADMIN</span>
+        </div>
+
+        <form id="adminLoginForm" class="admin-login-form" autocomplete="off">
+          <label>
+            <span>User</span>
+            <input id="adminUsername" placeholder="ใส่ชื่ออะไรก็ได้" required />
+          </label>
+          <label>
+            <span>Password</span>
+            <input id="adminPassword" type="password" placeholder="Password" required />
+          </label>
+          <button class="btn primary" type="submit">เข้าสู่ระบบ</button>
+        </form>
+        <p class="admin-note">ใส่UserและPassword</p>
+      </div>
+
+      <div id="adminWorkspace" class="admin-workspace hidden">
+        <div class="card admin-toolbar-card">
+          <div class="admin-toolbar">
+            <div>
+              <h2>Admin Record Management</h2>
+              <p>แก้ไขข้อความในแต่ละช่อง หรือลบ Record ที่ไม่ต้องการ</p>
+            </div>
+            <div class="admin-session">
+              <span id="adminSessionUser"></span>
+              <span id="adminBackendStatus" class="admin-backend-status">Backend: checking...</span>
+              <button id="adminLogoutBtn" class="btn ghost" type="button">ออกจาก Admin</button>
+            </div>
+          </div>
+
+          <div class="admin-search-row admin-search-row-v15">
+            <input id="adminSearchBox" placeholder="ค้นหา Repair ID / Model / Station / Failure / คนทำ..." />
+            <button id="adminReloadBtn" class="btn ghost" type="button">รีเฟรช</button>
+            <button id="adminNormalizeBtn" class="btn warning" type="button">จัดข้อมูลเก่าให้ตรงช่อง</button>
+          </div>
+        </div>
+
+        <div class="admin-layout">
+          <div class="card admin-list-card">
+            <div class="panel-head">
+              <div>
+                <h3>Repair Records</h3>
+                <p id="adminRecordCount">0 รายการ</p>
+              </div>
+            </div>
+
+            <div class="admin-table-wrap">
+              <table class="admin-table">
+                <thead>
+                  <tr>
+                    <th>Repair ID</th>
+                    <th>Model</th>
+                    <th>Station</th>
+                    <th>Failure / Symptom</th>
+                    <th>คนทำ</th>
+                    <th>จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody id="adminTableBody">
+                  <tr><td colspan="6" class="empty">เข้าสู่ระบบเพื่อจัดการข้อมูล</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card admin-editor-card">
+            <div class="panel-head">
+              <div>
+                <h3>Edit Record</h3>
+                <p>เลือก Record จากตารางด้านซ้าย</p>
+              </div>
+            </div>
+
+            <form id="adminEditForm" class="admin-edit-form">
+              <label>
+                <span>Repair ID</span>
+                <input id="adminEditRepairId" disabled />
+              </label>
+
+              <div class="admin-two-col">
+                <label>
+                  <span>วันที่</span>
+                  <input id="adminEditDate" placeholder="dd/MM/yyyy" />
+                </label>
+                <label>
+                  <span>เวลา</span>
+                  <input id="adminEditTime" placeholder="HH:mm:ss" />
+                </label>
+              </div>
+
+              <div class="admin-two-col">
+                <label>
+                  <span>Model</span>
+                  <input id="adminEditModel" />
+                </label>
+                <label>
+                  <span>Station</span>
+                  <input id="adminEditStation" />
+                </label>
+              </div>
+
+              <label>
+                <span>Failure / Symptom</span>
+                <textarea id="adminEditFailure" rows="3"></textarea>
+              </label>
+
+              <label>
+                <span>Repair Action</span>
+                <textarea id="adminEditRepairAction" rows="4"></textarea>
+              </label>
+
+              <div class="admin-two-col">
+                <label>
+                  <span>เริ่มซ่อม</span>
+                  <input id="adminEditStartRepair" type="time" />
+                </label>
+                <label>
+                  <span>ซ่อมเสร็จ</span>
+                  <input id="adminEditFinishRepair" type="time" />
+                </label>
+              </div>
+
+              <label>
+                <span>คนทำ</span>
+                <input id="adminEditRepairBy" />
+              </label>
+
+              <div id="adminCurrentImageWrap" class="admin-image-box hidden">
+                <span class="admin-image-title">รูปปัจจุบัน</span>
+                <img id="adminCurrentImage" alt="Current repair image" />
+                <label class="admin-checkbox">
+                  <input type="checkbox" id="adminRemoveImage" />
+                  <span>ลบรูปออกจาก Record และย้ายไฟล์ไป Trash</span>
+                </label>
+              </div>
+
+              <div class="admin-editor-actions">
+                <button id="adminClearEditBtn" class="btn ghost" type="button">ยกเลิกการแก้ไข</button>
+                <button id="adminSaveEditBtn" class="btn primary" type="submit" disabled>บันทึกการแก้ไข</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+
   </main>
 
   <div id="imageModal" class="image-modal hidden" aria-hidden="true">
@@ -471,6 +631,6 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js"></script>
+  <script src="app.js?v=18"></script>
 </body>
 </html>
