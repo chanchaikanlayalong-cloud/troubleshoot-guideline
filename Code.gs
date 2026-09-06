@@ -1,5 +1,5 @@
 /**
- * ATS1 Repair API V22.2
+ * ATS1 Repair API V23.0
  *
  * จุดสำคัญ:
  * - ข้อมูลใหม่บันทึกแบบ Canonical A:N เสมอ
@@ -15,13 +15,18 @@ const CONFIG = {
   MODEL_SHEET: 'Master_Model',
   FAILURE_GUIDE_SHEET: 'Failure_Guide',
   FAILURE_SUMMARY_SHEET: 'Failure_Summary',
+  FAILURE_MASTER_SHEET: 'Failure_Master',
+  FAILURE_ALIAS_SHEET: 'Failure_Alias',
+  FAILURE_GUIDE_IMAGES_SHEET: 'Failure_Guide_Images',
+  AUDIT_SHEET: 'Audit_Log',
+  BACKUP_FOLDER_NAME: 'ATS1_Repair_Backups',
   TIMEZONE: 'Asia/Bangkok',
   DRIVE_FOLDER_ID: '',
   PUBLIC_IMAGE_ACCESS: true,
-  ADMIN_PASSWORD: 'adminmin'
+  ADMIN_SESSION_HOURS: 8
 };
 
-const API_VERSION = 'V22.2';
+const API_VERSION = 'V23.0';
 
 const CANONICAL_HEADERS = [
   'Repair ID',            // A
@@ -41,18 +46,63 @@ const CANONICAL_HEADERS = [
 ];
 
 const FAILURE_GUIDE_HEADERS = [
-  'Guide ID',                  // A
-  'Failure Key',               // B
-  'Failure / Symptom',         // C
-  'วิธีแก้ไขแบบละเอียด',       // D
-  'ผู้เพิ่ม',                   // E
-  'วันที่',                     // F
-  'เวลา',                       // G
-  'Image File ID',             // H
-  'Image URL',                 // I
-  'Image Name',                // J
-  'Updated Date',              // K
-  'Updated Time'               // L
+  'Guide ID',                         // A
+  'Failure Key',                      // B
+  'Failure / Symptom',                // C
+  'Repair Step / วิธีแก้ไขแบบละเอียด', // D
+  'ผู้เพิ่ม',                          // E
+  'วันที่',                            // F
+  'เวลา',                              // G
+  'Image File ID',                    // H legacy/main image
+  'Image URL',                        // I
+  'Image Name',                       // J
+  'Updated Date',                     // K
+  'Updated Time',                     // L
+  'Root Cause',                       // M
+  'Check Point',                      // N
+  'Expected Value / Spec',            // O
+  'Verification',                     // P
+  'Tool / Equipment',                 // Q
+  'Related Model',                    // R
+  'Related Station'                   // S
+];
+
+const FAILURE_GUIDE_IMAGE_HEADERS = [
+  'Image ID',
+  'Guide ID',
+  'Image File ID',
+  'Image URL',
+  'Image Name',
+  'Caption',
+  'Sort Order',
+  'Added At'
+];
+
+const FAILURE_MASTER_HEADERS = [
+  'Canonical Failure',
+  'Failure Key',
+  'Status',
+  'Created At',
+  'Updated At'
+];
+
+const FAILURE_ALIAS_HEADERS = [
+  'Alias',
+  'Alias Key',
+  'Canonical Failure',
+  'Canonical Key',
+  'Created At'
+];
+
+const AUDIT_HEADERS = [
+  'Timestamp',
+  'Actor',
+  'Action',
+  'Entity Type',
+  'Entity ID',
+  'Before JSON',
+  'After JSON',
+  'Source'
 ];
 
 const FAILURE_SUMMARY_HEADERS = [
@@ -132,11 +182,29 @@ function doGet(e) {
         failures: buildFailureSummary_()
       };
 
+    } else if (action === 'failureMasters') {
+      data = {
+        ok: false,
+        error: 'V23: Failure Master requires Admin POST session'
+      };
+
     } else if (action === 'imageData') {
       data = getImageData_(p.fileId);
 
     } else if (action === 'adminOpStatus') {
       data = getAdminOperationStatus_(p.opId);
+
+    } else if (action === 'adminAudit') {
+      data = {
+        ok: false,
+        error: 'V23: Audit Log requires Admin POST session'
+      };
+
+    } else if (action === 'backupStatus') {
+      data = {
+        ok: false,
+        error: 'V23: Backup status requires Admin POST session'
+      };
 
     } else if (action === 'health') {
       const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -150,11 +218,16 @@ function doGet(e) {
         rowCount: sh ? Math.max(0, sh.getLastRow() - 1) : 0,
         failureGuideSheet: CONFIG.FAILURE_GUIDE_SHEET,
         failureSummarySheet: CONFIG.FAILURE_SUMMARY_SHEET,
+        failureMasterSheet: CONFIG.FAILURE_MASTER_SHEET,
+        failureAliasSheet: CONFIG.FAILURE_ALIAS_SHEET,
+        failureGuideImagesSheet: CONFIG.FAILURE_GUIDE_IMAGES_SHEET,
+        auditSheet: CONFIG.AUDIT_SHEET,
         historyDisplayOrder: HISTORY_DISPLAY_ORDER,
         repairRecordApiFields: REPAIR_RECORD_API_FIELDS,
         imageFolderReady: folderInfo.ready,
         imageFolderId: folderInfo.id,
-        imageFolderUrl: folderInfo.url
+        imageFolderUrl: folderInfo.url,
+        security: getSecurityHealth_()
       };
 
     } else {
@@ -165,7 +238,11 @@ function doGet(e) {
 
   } catch (err) {
     return output_(
-      { ok: false, error: String(err.message || err), apiVersion: API_VERSION },
+      {
+        ok: false,
+        error: String(err.message || err),
+        apiVersion: API_VERSION
+      },
       safeCallback_((e && e.parameter && e.parameter.callback) || '')
     );
   }
@@ -177,10 +254,71 @@ function doPost(e) {
   const action = String(p.action || '');
   const opId = String(p.opId || '').trim();
 
+  const idempotentActions = [
+    'save',
+    'saveFailureGuide',
+    'adminLogin',
+    'adminLogout',
+    'adminUpdate',
+    'adminDelete',
+    'adminGuideUpdate',
+    'adminGuideDelete',
+    'adminNormalizeAll',
+    'adminFailureMerge',
+    'adminCreateBackup',
+    'adminInstallBackupTrigger',
+    'adminGetAudit',
+    'adminGetFailureMasters',
+    'adminGetBackupStatus'
+  ];
+
   try {
+    if (opId && idempotentActions.includes(action)) {
+      const claim = claimOperation_(opId, action);
+
+      if (!claim.claimed) {
+        return json_(
+          claim.result || {
+            ok: true,
+            pending: true,
+            opId: opId,
+            apiVersion: API_VERSION
+          }
+        );
+      }
+    }
+
     let result;
 
-    if (action === 'save') {
+    if (action === 'adminLogin') {
+      result = {
+        ok: true,
+        ...adminLogin_(p.username, p.password)
+      };
+
+    } else if (action === 'adminLogout') {
+      const session = verifyAdminSession_(p.adminSessionToken);
+      invalidateAdminSession_(p.adminSessionToken);
+
+      appendAudit_(
+        session.user,
+        'ADMIN_LOGOUT',
+        'SESSION',
+        '',
+        null,
+        null,
+        'Admin'
+      );
+
+      result = {
+        ok: true,
+        loggedOut: true,
+        user: session.user
+      };
+
+    } else if (action === 'save') {
+      const access = verifyWriteAccess_(p);
+
       const required = [
         'model',
         'station',
@@ -191,92 +329,111 @@ function doPost(e) {
         'repairBy'
       ];
 
-      for (const key of required) {
+      required.forEach(key => {
         if (!String(p[key] || '').trim()) {
           throw new Error('Missing field: ' + key);
         }
+      });
+
+      result = {
+        ok: true,
+        ...saveRecord_(p, access.email)
+      };
+
+    } else if (action === 'saveFailureGuide') {
+      const access = verifyWriteAccess_(p);
+
+      result = {
+        ok: true,
+        ...saveFailureGuide_(p, access.email)
+      };
+
+    } else if (
+      [
+        'adminUpdate',
+        'adminDelete',
+        'adminGuideUpdate',
+        'adminGuideDelete',
+        'adminNormalizeAll',
+        'adminFailureMerge',
+        'adminCreateBackup',
+        'adminInstallBackupTrigger',
+        'adminGetAudit',
+        'adminGetFailureMasters',
+        'adminGetBackupStatus'
+      ].includes(action)
+    ) {
+      const session = verifyAdminSession_(p.adminSessionToken);
+
+      if (action === 'adminUpdate') {
+        result = { ok: true, ...adminUpdateRecord_(p, session.user) };
+
+      } else if (action === 'adminDelete') {
+        result = { ok: true, ...adminDeleteRecord_(p, session.user) };
+
+      } else if (action === 'adminGuideUpdate') {
+        result = { ok: true, ...adminUpdateFailureGuide_(p, session.user) };
+
+      } else if (action === 'adminGuideDelete') {
+        result = { ok: true, ...adminDeleteFailureGuide_(p, session.user) };
+
+      } else if (action === 'adminNormalizeAll') {
+        result = { ok: true, ...adminNormalizeAll_(session.user) };
+
+      } else if (action === 'adminFailureMerge') {
+        result = {
+          ok: true,
+          ...adminMergeFailure_(p.source, p.target, session.user)
+        };
+
+      } else if (action === 'adminCreateBackup') {
+        result = {
+          ok: true,
+          ...createProductionBackup_('MANUAL', session.user)
+        };
+
+      } else if (action === 'adminInstallBackupTrigger') {
+        result = {
+          ok: true,
+          ...installDailyBackupTrigger_(session.user)
+        };
+
+      } else if (action === 'adminGetAudit') {
+        result = {
+          ok: true,
+          audit: getAuditLog_(p.limit || 50).map(item => ({
+            timestamp: item.timestamp,
+            actor: item.actor,
+            action: item.action,
+            entityType: item.entityType,
+            entityId: item.entityId,
+            source: item.source
+          })),
+          sessionUser: session.user
+        };
+
+      } else if (action === 'adminGetFailureMasters') {
+        result = {
+          ok: true,
+          ...getFailureMasters_()
+        };
+
+      } else if (action === 'adminGetBackupStatus') {
+        result = {
+          ok: true,
+          ...getBackupStatus_()
+        };
       }
 
-      result = {
-        ok: true,
-        ...saveRecord_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
+    } else {
+      throw new Error('Unknown action: ' + action);
     }
 
-    if (action === 'saveFailureGuide') {
-      result = {
-        ok: true,
-        ...saveFailureGuide_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
+    if (opId) {
+      saveAdminOperationStatus_(opId, result);
     }
 
-    if (action === 'adminUpdate') {
-      verifyAdminPassword_(p.adminPassword);
-
-      result = {
-        ok: true,
-        ...adminUpdateRecord_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
-    }
-
-    if (action === 'adminDelete') {
-      verifyAdminPassword_(p.adminPassword);
-
-      result = {
-        ok: true,
-        ...adminDeleteRecord_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
-    }
-
-    if (action === 'adminGuideUpdate') {
-      verifyAdminPassword_(p.adminPassword);
-
-      result = {
-        ok: true,
-        ...adminUpdateFailureGuide_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
-    }
-
-    if (action === 'adminGuideDelete') {
-      verifyAdminPassword_(p.adminPassword);
-
-      result = {
-        ok: true,
-        ...adminDeleteFailureGuide_(p)
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
-    }
-
-    if (action === 'adminNormalizeAll') {
-      verifyAdminPassword_(p.adminPassword);
-
-      result = {
-        ok: true,
-        ...adminNormalizeAll_()
-      };
-
-      if (opId) saveAdminOperationStatus_(opId, result);
-      return json_(result);
-    }
-
-    throw new Error('Unknown action: ' + action);
+    return json_(result);
 
   } catch (err) {
     const result = {
@@ -285,18 +442,7 @@ function doPost(e) {
       apiVersion: API_VERSION
     };
 
-    if (
-      opId &&
-      [
-        'save',
-        'saveFailureGuide',
-        'adminUpdate',
-        'adminDelete',
-        'adminGuideUpdate',
-        'adminGuideDelete',
-        'adminNormalizeAll'
-      ].includes(action)
-    ) {
+    if (opId && idempotentActions.includes(action)) {
       try {
         saveAdminOperationStatus_(opId, result);
       } catch (statusErr) {
@@ -882,7 +1028,7 @@ function getRecords_() {
    SAVE NEW RECORD
 ========================================================= */
 
-function saveRecord_(p) {
+function saveRecord_(p, actorEmail) {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sh = ss.getSheetByName(CONFIG.REPAIR_SHEET);
 
@@ -893,7 +1039,7 @@ function saveRecord_(p) {
   ensureCanonicalHeader_(sh);
 
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
 
   let image = {
     fileId: '',
@@ -903,7 +1049,6 @@ function saveRecord_(p) {
 
   try {
     const now = new Date();
-
     const repairId = createRepairId_(sh, now);
 
     const dateText = Utilities.formatDate(
@@ -922,21 +1067,18 @@ function saveRecord_(p) {
     const finishRepair = normalizeHHMM_(p.finishRepair);
 
     if (!startRepair || !finishRepair) {
-      throw new Error(
-        'เวลาเริ่มซ่อมหรือซ่อมเสร็จไม่ถูกต้อง'
-      );
+      throw new Error('เวลาเริ่มซ่อมหรือซ่อมเสร็จไม่ถูกต้อง');
     }
 
     const model = requireText_(p.model, 'Model', 120);
     const station = requireText_(p.station, 'Station', 120);
-    const failure = requireText_(p.failure, 'Failure / Symptom', 1500);
+    const failure = ensureFailureMasterEntry_(
+      requireText_(p.failure, 'Failure / Symptom', 1500)
+    );
     const repairAction = requireText_(p.repairAction, 'Repair Action', 5000);
     const repairBy = requireText_(p.repairBy, 'คนทำ', 120);
 
-    image = saveImageIfProvided_(
-      repairId,
-      p
-    );
+    image = saveImageIfProvided_(repairId, p);
 
     const record = {
       repairId: repairId,
@@ -948,23 +1090,32 @@ function saveRecord_(p) {
       repairAction: repairAction,
       startRepair: startRepair,
       finishRepair: finishRepair,
-      repairTime: calculateRepairMinutes_(
-        startRepair,
-        finishRepair
-      ),
+      repairTime: calculateRepairMinutes_(startRepair, finishRepair),
       repairBy: repairBy,
       imageFileId: image.fileId,
       imageUrl: image.url,
       imageName: image.name
     };
 
-    sh.appendRow(
-      recordToCanonicalRow_(record)
-    );
-
+    sh.appendRow(recordToCanonicalRow_(record));
     addModelIfNew_(ss, model);
     SpreadsheetApp.flush();
-    safeSyncFailureSummary_();
+
+    incrementFailureSummary_(
+      failure,
+      1,
+      [dateText, timeText].join(' ')
+    );
+
+    appendAudit_(
+      actorEmail || repairBy || 'unknown',
+      'CREATE_REPAIR',
+      'REPAIR',
+      repairId,
+      null,
+      record,
+      'User'
+    );
 
     return {
       repairId: repairId,
@@ -972,8 +1123,6 @@ function saveRecord_(p) {
     };
 
   } catch (err) {
-    // ถ้า Upload รูปสำเร็จ แต่บันทึก Sheet ล้มเหลว
-    // ให้ลบรูปค้างออก เพื่อไม่เกิด orphan file.
     if (image.fileId) {
       trashRepairImageSafely_(image.fileId);
     }
@@ -984,7 +1133,6 @@ function saveRecord_(p) {
     lock.releaseLock();
   }
 }
-
 
 function createRepairId_(sh, now) {
   const ymd = Utilities.formatDate(
@@ -1033,15 +1181,435 @@ function createRepairId_(sh, now) {
    ADMIN
 ========================================================= */
 
+function sha256Hex_(value) {
+  const digest = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(value || ''),
+    Utilities.Charset.UTF_8
+  );
+
+  return digest
+    .map(byte => {
+      const n = byte < 0 ? byte + 256 : byte;
+      return n.toString(16).padStart(2, '0');
+    })
+    .join('');
+}
+
+
+function secureToken_() {
+  const raw = [
+    Utilities.getUuid(),
+    Utilities.getUuid(),
+    Date.now(),
+    Math.random()
+  ].join('|');
+
+  return Utilities.base64EncodeWebSafe(
+    Utilities.computeDigest(
+      Utilities.DigestAlgorithm.SHA_256,
+      raw,
+      Utilities.Charset.UTF_8
+    )
+  ).replace(/=+$/g, '');
+}
+
+
+function adminPasswordProperty_() {
+  return 'ADMIN_PASSWORD_SHA256';
+}
+
+
+function adminPasswordSaltProperty_() {
+  return 'ADMIN_PASSWORD_SALT';
+}
+
+
+function passwordHash_(passwordValue, saltValue) {
+  return sha256Hex_(
+    String(saltValue || '') +
+    '|' +
+    String(passwordValue || '')
+  );
+}
+
+
+function ensureAdminPasswordConfigured_() {
+  const props = PropertiesService.getScriptProperties();
+  let hash = props.getProperty(adminPasswordProperty_());
+  let salt = props.getProperty(adminPasswordSaltProperty_());
+
+  if (hash && salt) {
+    return { configured: true, generated: false };
+  }
+
+  const password =
+    'TE-' +
+    Utilities.getUuid()
+      .replace(/-/g, '')
+      .slice(0, 12);
+
+  salt = secureToken_().slice(0, 32);
+  hash = passwordHash_(password, salt);
+
+  props.setProperty(adminPasswordSaltProperty_(), salt);
+  props.setProperty(adminPasswordProperty_(), hash);
+
+  Logger.log('IMPORTANT - Initial Admin Password: ' + password);
+  Logger.log('Password plaintext is NOT stored in source; salted SHA-256 is in Script Properties.');
+
+  return {
+    configured: true,
+    generated: true,
+    password: password
+  };
+}
+
+
+function resetAdminPassword() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(adminPasswordProperty_());
+  props.deleteProperty(adminPasswordSaltProperty_());
+
+  const result = ensureAdminPasswordConfigured_();
+  Logger.log('New Admin Password: ' + result.password);
+
+  return result;
+}
+
+
+// Backward-compatible helper. V23 UI does not store or validate password client-side.
 function verifyAdminPassword_(password) {
-  if (
-    String(password || '') !==
-    CONFIG.ADMIN_PASSWORD
-  ) {
+  ensureAdminPasswordConfigured_();
+
+  const props = PropertiesService.getScriptProperties();
+  const expected = props.getProperty(adminPasswordProperty_());
+  const salt = props.getProperty(adminPasswordSaltProperty_());
+
+  if (!expected || !salt || passwordHash_(password, salt) !== expected) {
+    throw new Error('Admin password ไม่ถูกต้อง');
+  }
+
+  return true;
+}
+
+
+function adminSessionKey_(token) {
+  return 'ADMIN_SESSION_' + sha256Hex_(token);
+}
+
+
+function adminLoginGuardKey_(usernameValue) {
+  return (
+    'ADMIN_LOGIN_GUARD_' +
+    sha256Hex_(
+      String(usernameValue || '')
+        .trim()
+        .toLowerCase()
+    ).slice(0, 24)
+  );
+}
+
+
+function getAdminLoginGuard_(usernameValue) {
+  const props = PropertiesService.getScriptProperties();
+  const key = adminLoginGuardKey_(usernameValue);
+  const text = props.getProperty(key);
+
+  if (!text) {
+    return { attempts: 0, firstAt: 0, lockedUntil: 0 };
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    props.deleteProperty(key);
+    return { attempts: 0, firstAt: 0, lockedUntil: 0 };
+  }
+}
+
+
+function assertAdminLoginAllowed_(usernameValue) {
+  const guard = getAdminLoginGuard_(usernameValue);
+  const now = Date.now();
+
+  if (Number(guard.lockedUntil || 0) > now) {
+    const seconds = Math.ceil((guard.lockedUntil - now) / 1000);
     throw new Error(
-      'Admin password ไม่ถูกต้อง'
+      'Admin Login ถูกพักชั่วคราวจากการลองรหัสหลายครั้ง กรุณารอ ' +
+      seconds +
+      ' วินาที'
     );
   }
+}
+
+
+function recordAdminLoginFailure_(usernameValue) {
+  const props = PropertiesService.getScriptProperties();
+  const key = adminLoginGuardKey_(usernameValue);
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const lockMs = 10 * 60 * 1000;
+  let guard = getAdminLoginGuard_(usernameValue);
+
+  if (!guard.firstAt || now - Number(guard.firstAt) > windowMs) {
+    guard = { attempts: 0, firstAt: now, lockedUntil: 0 };
+  }
+
+  guard.attempts = Number(guard.attempts || 0) + 1;
+
+  if (guard.attempts >= 5) {
+    guard.lockedUntil = now + lockMs;
+  }
+
+  props.setProperty(key, JSON.stringify(guard));
+}
+
+
+function clearAdminLoginGuard_(usernameValue) {
+  PropertiesService
+    .getScriptProperties()
+    .deleteProperty(adminLoginGuardKey_(usernameValue));
+}
+
+
+function cleanupAdminSessions_() {
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  const now = Date.now();
+
+  Object.keys(all).forEach(key => {
+    if (!key.startsWith('ADMIN_SESSION_')) return;
+
+    try {
+      const session = JSON.parse(all[key]);
+
+      if (!session.expiresAt || Number(session.expiresAt) <= now) {
+        props.deleteProperty(key);
+      }
+    } catch (err) {
+      props.deleteProperty(key);
+    }
+  });
+}
+
+
+function adminLogin_(usernameValue, passwordValue) {
+  ensureAdminPasswordConfigured_();
+  cleanupAdminSessions_();
+
+  const username = requireText_(usernameValue, 'User', 120);
+  assertAdminLoginAllowed_(username);
+
+  try {
+    verifyAdminPassword_(passwordValue);
+  } catch (err) {
+    recordAdminLoginFailure_(username);
+
+    appendAudit_(
+      username,
+      'ADMIN_LOGIN_FAILED',
+      'SESSION',
+      '',
+      null,
+      null,
+      'Admin'
+    );
+
+    throw err;
+  }
+
+  clearAdminLoginGuard_(username);
+
+  const token = secureToken_();
+  const now = Date.now();
+
+  const session = {
+    user: username,
+    createdAt: now,
+    expiresAt:
+      now +
+      CONFIG.ADMIN_SESSION_HOURS * 60 * 60 * 1000
+  };
+
+  PropertiesService
+    .getScriptProperties()
+    .setProperty(
+      adminSessionKey_(token),
+      JSON.stringify(session)
+    );
+
+  appendAudit_(
+    username,
+    'ADMIN_LOGIN',
+    'SESSION',
+    '',
+    null,
+    { expiresAt: new Date(session.expiresAt).toISOString() },
+    'Admin'
+  );
+
+  return {
+    sessionToken: token,
+    sessionUser: username,
+    expiresAt: session.expiresAt
+  };
+}
+
+
+function verifyAdminSession_(tokenValue) {
+  const token = String(tokenValue || '').trim();
+
+  if (!token) {
+    throw new Error('Admin Session หมดอายุหรือยังไม่ได้ Login');
+  }
+
+  cleanupAdminSessions_();
+
+  const props = PropertiesService.getScriptProperties();
+  const key = adminSessionKey_(token);
+  const text = props.getProperty(key);
+
+  if (!text) {
+    throw new Error('Admin Session ไม่ถูกต้องหรือหมดอายุ');
+  }
+
+  const session = JSON.parse(text);
+
+  if (Number(session.expiresAt || 0) <= Date.now()) {
+    props.deleteProperty(key);
+    throw new Error('Admin Session หมดอายุ กรุณา Login ใหม่');
+  }
+
+  return session;
+}
+
+
+function invalidateAdminSession_(tokenValue) {
+  const token = String(tokenValue || '').trim();
+  if (!token) return;
+
+  PropertiesService
+    .getScriptProperties()
+    .deleteProperty(adminSessionKey_(token));
+}
+
+
+function getWriteAccessMode_() {
+  return String(
+    PropertiesService
+      .getScriptProperties()
+      .getProperty('WRITE_ACCESS_MODE') ||
+    'OPEN'
+  ).trim().toUpperCase();
+}
+
+
+function getAllowedDomain_() {
+  return String(
+    PropertiesService
+      .getScriptProperties()
+      .getProperty('ALLOWED_DOMAIN') ||
+    ''
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/^@/, '');
+}
+
+
+function configureWorkspaceWriteAccess() {
+  const email = String(
+    Session.getActiveUser().getEmail() || ''
+  ).trim();
+
+  if (!email || !email.includes('@')) {
+    throw new Error(
+      'ไม่สามารถอ่าน Google Workspace email ได้ กรุณาตั้ง Script Properties WRITE_ACCESS_MODE=DOMAIN และ ALLOWED_DOMAIN เอง'
+    );
+  }
+
+  const domain = email.split('@').pop().toLowerCase();
+  const props = PropertiesService.getScriptProperties();
+
+  props.setProperty('WRITE_ACCESS_MODE', 'DOMAIN');
+  props.setProperty('ALLOWED_DOMAIN', domain);
+
+  Logger.log('WRITE_ACCESS_MODE = DOMAIN');
+  Logger.log('ALLOWED_DOMAIN = ' + domain);
+
+  return { mode: 'DOMAIN', domain: domain };
+}
+
+
+function configureOpenWriteAccess() {
+  PropertiesService
+    .getScriptProperties()
+    .setProperty('WRITE_ACCESS_MODE', 'OPEN');
+
+  Logger.log('WARNING: WRITE_ACCESS_MODE = OPEN');
+
+  return { mode: 'OPEN' };
+}
+
+
+function verifyWriteAccess_(p) {
+  const mode = getWriteAccessMode_();
+  const email = String(
+    Session.getActiveUser().getEmail() || ''
+  ).trim();
+
+  if (mode === 'OPEN') {
+    return { mode: mode, email: email };
+  }
+
+  if (!email) {
+    throw new Error(
+      'ระบบ Production กำหนดให้ต้อง Login Google Workspace ก่อนบันทึก'
+    );
+  }
+
+  if (mode === 'WORKSPACE') {
+    return { mode: mode, email: email };
+  }
+
+  if (mode === 'DOMAIN') {
+    const domain = getAllowedDomain_();
+
+    if (!domain) {
+      throw new Error('ยังไม่ได้ตั้ง ALLOWED_DOMAIN ใน Script Properties');
+    }
+
+    if (!email.toLowerCase().endsWith('@' + domain)) {
+      throw new Error('บัญชีนี้ไม่ได้รับสิทธิ์เขียนข้อมูล');
+    }
+
+    return { mode: mode, email: email };
+  }
+
+  throw new Error('WRITE_ACCESS_MODE ไม่ถูกต้อง: ' + mode);
+}
+
+
+function getSecurityHealth_() {
+  const props = PropertiesService.getScriptProperties();
+  const mode = getWriteAccessMode_();
+  const domain = getAllowedDomain_();
+  const adminConfigured = Boolean(
+    props.getProperty(adminPasswordProperty_()) &&
+    props.getProperty(adminPasswordSaltProperty_())
+  );
+
+  return {
+    adminPasswordConfigured: adminConfigured,
+    writeAccessMode: mode,
+    allowedDomain: domain,
+    warning: !adminConfigured || mode === 'OPEN',
+    message:
+      mode === 'OPEN'
+        ? 'WRITE_ACCESS_MODE=OPEN เหมาะกับทดสอบเท่านั้น; Production แนะนำ DOMAIN/WORKSPACE'
+        : 'Write access policy enabled'
+  };
 }
 
 
@@ -1091,9 +1659,9 @@ function findRowByRepairId_(sh, repairId) {
 }
 
 
-function adminUpdateRecord_(p) {
+function adminUpdateRecord_(p, actorValue) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
 
   try {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
@@ -1105,15 +1673,8 @@ function adminUpdateRecord_(p) {
 
     ensureCanonicalHeader_(sh);
 
-    const rowNumber = findRowByRepairId_(
-      sh,
-      p.repairId
-    );
-
-    const lastCol = Math.max(
-      sh.getLastColumn(),
-      CANONICAL_HEADERS.length
-    );
+    const rowNumber = findRowByRepairId_(sh, p.repairId);
+    const lastCol = Math.max(sh.getLastColumn(), CANONICAL_HEADERS.length);
 
     const oldRow = sh.getRange(
       rowNumber,
@@ -1122,38 +1683,31 @@ function adminUpdateRecord_(p) {
       lastCol
     ).getDisplayValues()[0];
 
-    const oldRecord = parseRepairRow_(
-      oldRow,
-      rowNumber
-    );
+    const oldRecord = parseRepairRow_(oldRow, rowNumber);
 
     const date = normalizeDateText_(p.date);
     const recordTime = normalizeHHMMSS_(p.time);
 
     if (!date) {
-      throw new Error(
-        'วันที่ต้องเป็นรูปแบบ dd/MM/yyyy และเป็นวันที่จริง'
-      );
+      throw new Error('วันที่ต้องเป็นรูปแบบ dd/MM/yyyy และเป็นวันที่จริง');
     }
 
     if (!recordTime) {
-      throw new Error(
-        'เวลาบันทึกต้องเป็นรูปแบบ HH:mm:ss'
-      );
+      throw new Error('เวลาบันทึกต้องเป็นรูปแบบ HH:mm:ss');
     }
 
     const startRepair = normalizeHHMM_(p.startRepair);
     const finishRepair = normalizeHHMM_(p.finishRepair);
 
     if (!startRepair || !finishRepair) {
-      throw new Error(
-        'เวลาเริ่มซ่อมและซ่อมเสร็จต้องเป็น HH:mm'
-      );
+      throw new Error('เวลาเริ่มซ่อมและซ่อมเสร็จต้องเป็น HH:mm');
     }
 
     const model = requireText_(p.model, 'Model', 120);
     const station = requireText_(p.station, 'Station', 120);
-    const failure = requireText_(p.failure, 'Failure / Symptom', 1500);
+    const failure = ensureFailureMasterEntry_(
+      requireText_(p.failure, 'Failure / Symptom', 1500)
+    );
     const repairAction = requireText_(p.repairAction, 'Repair Action', 5000);
     const repairBy = requireText_(p.repairBy, 'คนทำ', 120);
 
@@ -1179,38 +1733,51 @@ function adminUpdateRecord_(p) {
       repairAction: repairAction,
       startRepair: startRepair,
       finishRepair: finishRepair,
-      repairTime: calculateRepairMinutes_(
-        startRepair,
-        finishRepair
-      ),
+      repairTime: calculateRepairMinutes_(startRepair, finishRepair),
       repairBy: repairBy,
       imageFileId: fileId,
       imageUrl: imageUrl,
       imageName: imageName
     };
 
-    sh.getRange(
-      rowNumber,
-      1,
-      1,
-      lastCol
-    ).clearContent();
-
+    sh.getRange(rowNumber, 1, 1, lastCol).clearContent();
     sh.getRange(
       rowNumber,
       1,
       1,
       CANONICAL_HEADERS.length
-    ).setValues([
-      recordToCanonicalRow_(record)
-    ]);
+    ).setValues([recordToCanonicalRow_(record)]);
 
     addModelIfNew_(ss, record.model);
     SpreadsheetApp.flush();
-    safeSyncFailureSummary_();
 
-    // Trash หลัง Sheet commit เท่านั้น เพื่อไม่ให้ Sheet อ้างถึงรูปที่ถูกลบ
-    // ในกรณี Sheet write ล้มเหลว.
+    const oldCanonical = resolveCanonicalFailure_(oldRecord.failure, false);
+    const oldKey = normalizeFailureKey_(oldCanonical);
+    const newKey = normalizeFailureKey_(failure);
+
+    if (oldKey !== newKey) {
+      incrementFailureSummary_(oldCanonical, -1, '');
+      incrementFailureSummary_(
+        failure,
+        1,
+        [date, recordTime].join(' ')
+      );
+    } else {
+      // Same Failure but date/time may have changed. Keep last-seen accurate.
+      const latest = findLatestFailureSeen_(failure);
+      incrementFailureSummary_(failure, 0, latest);
+    }
+
+    appendAudit_(
+      actorValue || 'Admin',
+      'UPDATE_REPAIR',
+      'REPAIR',
+      record.repairId,
+      oldRecord,
+      record,
+      'Admin'
+    );
+
     if (imageFileToTrash) {
       trashRepairImageSafely_(imageFileToTrash);
     }
@@ -1225,8 +1792,7 @@ function adminUpdateRecord_(p) {
     lock.releaseLock();
   }
 }
-
-function adminDeleteRecord_(p) {
+function adminDeleteRecord_(p, actorValue) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
 
@@ -1238,15 +1804,8 @@ function adminDeleteRecord_(p) {
       throw new Error('ไม่พบชีต ' + CONFIG.REPAIR_SHEET);
     }
 
-    const rowNumber = findRowByRepairId_(
-      sh,
-      p.repairId
-    );
-
-    const lastCol = Math.max(
-      sh.getLastColumn(),
-      CANONICAL_HEADERS.length
-    );
+    const rowNumber = findRowByRepairId_(sh, p.repairId);
+    const lastCol = Math.max(sh.getLastColumn(), CANONICAL_HEADERS.length);
 
     const row = sh.getRange(
       rowNumber,
@@ -1255,14 +1814,22 @@ function adminDeleteRecord_(p) {
       lastCol
     ).getDisplayValues()[0];
 
-    const record = parseRepairRow_(
-      row,
-      rowNumber
-    );
+    const record = parseRepairRow_(row, rowNumber);
 
     sh.deleteRow(rowNumber);
     SpreadsheetApp.flush();
-    safeSyncFailureSummary_();
+
+    incrementFailureSummary_(record.failure, -1, '');
+
+    appendAudit_(
+      actorValue || 'Admin',
+      'DELETE_REPAIR',
+      'REPAIR',
+      record.repairId,
+      record,
+      null,
+      'Admin'
+    );
 
     if (record.imageFileId) {
       trashRepairImageSafely_(record.imageFileId);
@@ -1277,8 +1844,7 @@ function adminDeleteRecord_(p) {
     lock.releaseLock();
   }
 }
-
-function adminNormalizeAll_() {
+function adminNormalizeAll_(actorValue) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
 
@@ -1294,18 +1860,13 @@ function adminNormalizeAll_() {
 
     if (lastRow < 2) {
       ensureCanonicalHeader_(sh);
-
       return {
         normalizedRows: 0,
         backupSheet: ''
       };
     }
 
-    const lastCol = Math.max(
-      sh.getLastColumn(),
-      CANONICAL_HEADERS.length
-    );
-
+    const lastCol = Math.max(sh.getLastColumn(), CANONICAL_HEADERS.length);
     const rows = sh.getRange(
       2,
       1,
@@ -1313,13 +1874,21 @@ function adminNormalizeAll_() {
       lastCol
     ).getDisplayValues();
 
-    const parsed = rows.map(
-      (row, index) =>
-        parseRepairRow_(row, index + 2)
-    );
+    const resolver = getFailureResolverMaps_();
+
+    const parsed = rows.map((row, index) => {
+      const record = parseRepairRow_(row, index + 2);
+
+      if (record.failure) {
+        const canonical = resolveCanonicalFailureWithMaps_(record.failure, resolver);
+        record.failure = canonical;
+      }
+
+      return record;
+    });
 
     const valid = parsed.filter(
-      r => String(r.repairId || '').trim()
+      record => String(record.repairId || '').trim()
     );
 
     const seenIds = new Set();
@@ -1342,9 +1911,7 @@ function adminNormalizeAll_() {
       );
     }
 
-    // Backup ก่อนเขียนทับข้อมูลเก่า
     const backupSheet = createRepairLogBackup_(ss, sh);
-
     ensureCanonicalHeader_(sh);
 
     sh.getRange(
@@ -1360,13 +1927,24 @@ function adminNormalizeAll_() {
         1,
         valid.length,
         CANONICAL_HEADERS.length
-      ).setValues(
-        valid.map(recordToCanonicalRow_)
-      );
+      ).setValues(valid.map(recordToCanonicalRow_));
     }
 
     SpreadsheetApp.flush();
-    safeSyncFailureSummary_();
+    rebuildFailureSummary_();
+
+    appendAudit_(
+      actorValue || 'Admin',
+      'NORMALIZE_REPAIR_LOG',
+      'REPAIR_LOG',
+      CONFIG.REPAIR_SHEET,
+      null,
+      {
+        normalizedRows: valid.length,
+        backupSheet: backupSheet.getName()
+      },
+      'Admin'
+    );
 
     return {
       normalizedRows: valid.length,
@@ -1377,7 +1955,6 @@ function adminNormalizeAll_() {
     lock.releaseLock();
   }
 }
-
 
 function createRepairLogBackup_(ss, sourceSheet) {
   const stamp = Utilities.formatDate(
@@ -1406,30 +1983,78 @@ function createRepairLogBackup_(ss, sourceSheet) {
 ========================================================= */
 
 function adminOpKey_(opId) {
-  return (
-    'ADMIN_OP_' +
-    String(opId || '').trim()
-  );
+  return 'ADMIN_OP_' + String(opId || '').trim();
+}
+
+
+function validateOperationId_(opId) {
+  const id = String(opId || '').trim();
+
+  if (!/^[A-Za-z0-9_-]{8,120}$/.test(id)) {
+    throw new Error('Invalid operation ID');
+  }
+
+  return id;
+}
+
+
+function claimOperation_(opId, action) {
+  const id = validateOperationId_(opId);
+  cleanupOldOperationStatuses_();
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const key = adminOpKey_(id);
+    const existing = props.getProperty(key);
+
+    if (existing) {
+      try {
+        return {
+          claimed: false,
+          result: JSON.parse(existing)
+        };
+      } catch (err) {
+        props.deleteProperty(key);
+      }
+    }
+
+    const pending = {
+      ok: true,
+      pending: true,
+      opId: id,
+      action: String(action || ''),
+      claimedAt: new Date().toISOString(),
+      timestamp: new Date().toISOString(),
+      apiVersion: API_VERSION
+    };
+
+    props.setProperty(key, JSON.stringify(pending));
+
+    return {
+      claimed: true,
+      result: pending
+    };
+
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 
 function saveAdminOperationStatus_(opId, result) {
-  const id = String(opId || '').trim();
-
-  if (
-    !/^[A-Za-z0-9_-]{8,120}$/.test(id)
-  ) {
-    throw new Error('Invalid operation ID');
-  }
-
-  cleanupOldOperationStatuses_();
+  const id = validateOperationId_(opId);
 
   PropertiesService
     .getScriptProperties()
     .setProperty(
       adminOpKey_(id),
       JSON.stringify({
+        pending: false,
         ...result,
+        opId: id,
         apiVersion: API_VERSION,
         timestamp: new Date().toISOString()
       })
@@ -1438,39 +2063,34 @@ function saveAdminOperationStatus_(opId, result) {
 
 
 function getAdminOperationStatus_(opId) {
-  const id = String(opId || '').trim();
+  let id;
 
-  if (
-    !/^[A-Za-z0-9_-]{8,120}$/.test(id)
-  ) {
+  try {
+    id = validateOperationId_(opId);
+  } catch (err) {
     return {
       ok: false,
       pending: false,
-      error: 'Invalid operation ID',
+      error: err.message,
       apiVersion: API_VERSION
     };
   }
 
   const text = PropertiesService
     .getScriptProperties()
-    .getProperty(
-      adminOpKey_(id)
-    );
+    .getProperty(adminOpKey_(id));
 
   if (!text) {
     return {
       ok: true,
       pending: true,
+      opId: id,
       apiVersion: API_VERSION
     };
   }
 
   try {
-    return {
-      pending: false,
-      ...JSON.parse(text)
-    };
-
+    return JSON.parse(text);
   } catch (err) {
     return {
       ok: false,
@@ -1483,37 +2103,39 @@ function getAdminOperationStatus_(opId) {
 
 
 function cleanupOldOperationStatuses_() {
-  const props = PropertiesService
-    .getScriptProperties();
-
+  const props = PropertiesService.getScriptProperties();
   const all = props.getProperties();
   const now = Date.now();
-  const maxAgeMs = 10 * 60 * 1000;
+  const completedMaxAge = 2 * 60 * 60 * 1000;
+  const pendingMaxAge = 30 * 60 * 1000;
+  const survivors = [];
 
   Object.keys(all).forEach(key => {
     if (!key.startsWith('ADMIN_OP_')) return;
 
     try {
       const data = JSON.parse(all[key]);
-      const time = Date.parse(data.timestamp || '');
+      const time = Date.parse(data.timestamp || data.claimedAt || '');
+      const maxAge = data.pending ? pendingMaxAge : completedMaxAge;
 
-      if (
-        !Number.isFinite(time) ||
-        now - time > maxAgeMs
-      ) {
+      if (!Number.isFinite(time) || now - time > maxAge) {
         props.deleteProperty(key);
+        return;
       }
+
+      survivors.push({ key, time });
 
     } catch (err) {
       props.deleteProperty(key);
     }
   });
+
+  // Script Properties has a finite quota. Keep only recent operation states.
+  survivors
+    .sort((a, b) => b.time - a.time)
+    .slice(100)
+    .forEach(item => props.deleteProperty(item.key));
 }
-
-
-/* =========================================================
-   FAILURE SUMMARY / DETAILED GUIDE
-========================================================= */
 
 function normalizeFailureKey_(value) {
   return String(value || '')
@@ -1523,120 +2145,1068 @@ function normalizeFailureKey_(value) {
 }
 
 
-function ensureFailureGuideSheet_(ss) {
-  let sh = ss.getSheetByName(
-    CONFIG.FAILURE_GUIDE_SHEET
-  );
+/* =========================================================
+   PRODUCTION INFRASTRUCTURE
+   Sheets / Audit / Failure Master / Backup
+========================================================= */
+
+function ensureSheetWithHeaders_(ss, sheetName, headers, headerColor) {
+  let sh = ss.getSheetByName(sheetName);
 
   if (!sh) {
-    sh = ss.insertSheet(
-      CONFIG.FAILURE_GUIDE_SHEET
-    );
+    sh = ss.insertSheet(sheetName);
   }
 
-  if (sh.getMaxColumns() < FAILURE_GUIDE_HEADERS.length) {
+  if (sh.getMaxColumns() < headers.length) {
     sh.insertColumnsAfter(
       sh.getMaxColumns(),
-      FAILURE_GUIDE_HEADERS.length - sh.getMaxColumns()
+      headers.length - sh.getMaxColumns()
     );
   }
 
-  sh.getRange(
-    1,
-    1,
-    1,
-    FAILURE_GUIDE_HEADERS.length
-  )
-    .setValues([FAILURE_GUIDE_HEADERS])
+  sh.getRange(1, 1, 1, headers.length)
+    .setValues([headers])
     .setFontWeight('bold')
-    .setBackground('#7F6000')
+    .setBackground(headerColor || '#44546A')
     .setFontColor('#FFFFFF');
 
   sh.setFrozenRows(1);
 
   return sh;
+}
+
+
+function ensureAuditSheet_(ss) {
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.AUDIT_SHEET,
+    AUDIT_HEADERS,
+    '#5B5B5B'
+  );
+}
+
+
+function appendAudit_(actorValue, actionValue, entityTypeValue, entityIdValue, beforeValue, afterValue, sourceValue) {
+  try {
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const sh = ensureAuditSheet_(ss);
+
+    const timestamp = Utilities.formatDate(
+      new Date(),
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy HH:mm:ss'
+    );
+
+    const safeJson = value => {
+      if (value === null || value === undefined || value === '') {
+        return '';
+      }
+
+      const text = typeof value === 'string'
+        ? value
+        : JSON.stringify(value);
+
+      return clean_(text.slice(0, 45000));
+    };
+
+    sh.appendRow([
+      timestamp,
+      clean_(String(actorValue || 'unknown').slice(0, 200)),
+      clean_(String(actionValue || '').slice(0, 100)),
+      clean_(String(entityTypeValue || '').slice(0, 100)),
+      clean_(String(entityIdValue || '').slice(0, 300)),
+      safeJson(beforeValue),
+      safeJson(afterValue),
+      clean_(String(sourceValue || '').slice(0, 120))
+    ]);
+
+  } catch (err) {
+    console.log('Audit Log failed: ' + String(err.message || err));
+  }
+}
+
+
+function getAuditLog_(limitValue) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureAuditSheet_(ss);
+  const lastRow = sh.getLastRow();
+
+  if (lastRow < 2) return [];
+
+  const limit = Math.min(
+    200,
+    Math.max(1, Number(limitValue || 50))
+  );
+
+  const startRow = Math.max(2, lastRow - limit + 1);
+
+  return sh.getRange(
+    startRow,
+    1,
+    lastRow - startRow + 1,
+    AUDIT_HEADERS.length
+  )
+    .getDisplayValues()
+    .reverse()
+    .map(row => ({
+      timestamp: row[0] || '',
+      actor: row[1] || '',
+      action: row[2] || '',
+      entityType: row[3] || '',
+      entityId: row[4] || '',
+      beforeJson: row[5] || '',
+      afterJson: row[6] || '',
+      source: row[7] || ''
+    }));
+}
+
+
+function ensureFailureMasterSheet_(ss) {
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.FAILURE_MASTER_SHEET,
+    FAILURE_MASTER_HEADERS,
+    '#4472C4'
+  );
+}
+
+
+function ensureFailureAliasSheet_(ss) {
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.FAILURE_ALIAS_SHEET,
+    FAILURE_ALIAS_HEADERS,
+    '#8064A2'
+  );
+}
+
+
+function getFailureResolverMaps_() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const master = ensureFailureMasterSheet_(ss);
+  const alias = ensureFailureAliasSheet_(ss);
+
+  const masterMap = new Map();
+  const aliasMap = new Map();
+  const masterRows = new Map();
+
+  if (master.getLastRow() >= 2) {
+    master.getRange(
+      2,
+      1,
+      master.getLastRow() - 1,
+      FAILURE_MASTER_HEADERS.length
+    ).getDisplayValues().forEach((row, index) => {
+      const failure = String(row[0] || '').trim();
+      const key = String(row[1] || normalizeFailureKey_(failure)).trim();
+      const status = String(row[2] || 'ACTIVE').trim().toUpperCase();
+
+      if (failure && key && status !== 'DELETED') {
+        masterMap.set(key, failure);
+        masterRows.set(key, index + 2);
+      }
+    });
+  }
+
+  if (alias.getLastRow() >= 2) {
+    alias.getRange(
+      2,
+      1,
+      alias.getLastRow() - 1,
+      FAILURE_ALIAS_HEADERS.length
+    ).getDisplayValues().forEach(row => {
+      const aliasKey = String(row[1] || '').trim();
+      const canonical = String(row[2] || '').trim();
+
+      if (aliasKey && canonical) {
+        aliasMap.set(aliasKey, canonical);
+      }
+    });
+  }
+
+  return {
+    ss,
+    master,
+    alias,
+    masterMap,
+    aliasMap,
+    masterRows
+  };
+}
+
+
+function resolveCanonicalFailureWithMaps_(failureValue, maps) {
+  const failure = String(failureValue || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!failure) return '';
+
+  const key = normalizeFailureKey_(failure);
+
+  if (maps.aliasMap.has(key)) {
+    return maps.aliasMap.get(key);
+  }
+
+  if (maps.masterMap.has(key)) {
+    return maps.masterMap.get(key);
+  }
+
+  return failure;
+}
+
+
+function ensureFailureMasterEntry_(failureValue) {
+  const failure = requireText_(
+    failureValue,
+    'Failure / Symptom',
+    1500
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const key = normalizeFailureKey_(failure);
+  const maps = getFailureResolverMaps_();
+
+  if (maps.aliasMap.has(key)) {
+    return maps.aliasMap.get(key);
+  }
+
+  if (maps.masterMap.has(key)) {
+    return maps.masterMap.get(key);
+  }
+
+  const now = Utilities.formatDate(
+    new Date(),
+    CONFIG.TIMEZONE,
+    'dd/MM/yyyy HH:mm:ss'
+  );
+
+  maps.master.appendRow([
+    clean_(failure),
+    clean_(key),
+    'ACTIVE',
+    now,
+    now
+  ]);
+
+  return failure;
+}
+
+
+function resolveCanonicalFailure_(failureValue, createIfMissing) {
+  const failure = String(failureValue || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!failure) return '';
+
+  const maps = getFailureResolverMaps_();
+  const resolved = resolveCanonicalFailureWithMaps_(failure, maps);
+
+  if (
+    normalizeFailureKey_(resolved) !== normalizeFailureKey_(failure) ||
+    maps.masterMap.has(normalizeFailureKey_(failure))
+  ) {
+    return resolved;
+  }
+
+  return createIfMissing
+    ? ensureFailureMasterEntry_(failure)
+    : failure;
+}
+
+
+function getFailureMasters_() {
+  const maps = getFailureResolverMaps_();
+  const masters = [];
+  const aliases = [];
+
+  if (maps.master.getLastRow() >= 2) {
+    maps.master.getRange(
+      2,
+      1,
+      maps.master.getLastRow() - 1,
+      FAILURE_MASTER_HEADERS.length
+    ).getDisplayValues().forEach(row => {
+      if (!row[0]) return;
+
+      masters.push({
+        failure: row[0],
+        failureKey: row[1],
+        status: row[2] || 'ACTIVE',
+        createdAt: row[3],
+        updatedAt: row[4]
+      });
+    });
+  }
+
+  if (maps.alias.getLastRow() >= 2) {
+    maps.alias.getRange(
+      2,
+      1,
+      maps.alias.getLastRow() - 1,
+      FAILURE_ALIAS_HEADERS.length
+    ).getDisplayValues().forEach(row => {
+      if (!row[0]) return;
+
+      aliases.push({
+        alias: row[0],
+        aliasKey: row[1],
+        canonicalFailure: row[2],
+        canonicalKey: row[3],
+        createdAt: row[4]
+      });
+    });
+  }
+
+  return { masters, aliases };
+}
+
+
+function addFailureAlias_(aliasValue, canonicalValue) {
+  const aliasText = String(aliasValue || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const canonical = ensureFailureMasterEntry_(canonicalValue);
+
+  if (!aliasText) return;
+
+  const aliasKey = normalizeFailureKey_(aliasText);
+  const canonicalKey = normalizeFailureKey_(canonical);
+
+  if (aliasKey === canonicalKey) return;
+
+  const maps = getFailureResolverMaps_();
+  const now = Utilities.formatDate(
+    new Date(),
+    CONFIG.TIMEZONE,
+    'dd/MM/yyyy HH:mm:ss'
+  );
+
+  if (maps.alias.getLastRow() >= 2) {
+    const keys = maps.alias.getRange(
+      2,
+      2,
+      maps.alias.getLastRow() - 1,
+      1
+    ).getDisplayValues().flat();
+
+    const index = keys.findIndex(
+      value => String(value || '').trim() === aliasKey
+    );
+
+    if (index >= 0) {
+      maps.alias.getRange(
+        index + 2,
+        1,
+        1,
+        FAILURE_ALIAS_HEADERS.length
+      ).setValues([[
+        clean_(aliasText),
+        clean_(aliasKey),
+        clean_(canonical),
+        clean_(canonicalKey),
+        now
+      ]]);
+
+      return;
+    }
+  }
+
+  maps.alias.appendRow([
+    clean_(aliasText),
+    clean_(aliasKey),
+    clean_(canonical),
+    clean_(canonicalKey),
+    now
+  ]);
+}
+
+
+function markFailureMasterMerged_(sourceValue, targetValue) {
+  const sourceKey = normalizeFailureKey_(sourceValue);
+  const maps = getFailureResolverMaps_();
+  const rowNumber = maps.masterRows.get(sourceKey);
+
+  if (!rowNumber) return;
+
+  maps.master.getRange(rowNumber, 3).setValue('MERGED → ' + targetValue);
+  maps.master.getRange(rowNumber, 5).setValue(
+    Utilities.formatDate(
+      new Date(),
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy HH:mm:ss'
+    )
+  );
+}
+
+
+function ensureFailureGuideImagesSheet_(ss) {
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.FAILURE_GUIDE_IMAGES_SHEET,
+    FAILURE_GUIDE_IMAGE_HEADERS,
+    '#BF9000'
+  );
+}
+
+
+function createGuideImageId_(guideId) {
+  return (
+    String(guideId || 'FG') +
+    '-IMG-' +
+    Utilities.getUuid().replace(/-/g, '').slice(0, 12)
+  );
+}
+
+
+function getFailureGuideImagesMap_() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureGuideImagesSheet_(ss);
+  const map = new Map();
+
+  if (sh.getLastRow() < 2) return map;
+
+  sh.getRange(
+    2,
+    1,
+    sh.getLastRow() - 1,
+    FAILURE_GUIDE_IMAGE_HEADERS.length
+  ).getDisplayValues().forEach(row => {
+    const guideId = String(row[1] || '').trim();
+    if (!guideId) return;
+
+    const image = {
+      imageId: row[0] || '',
+      guideId: guideId,
+      imageFileId: row[2] || '',
+      imageUrl: row[3] || '',
+      imageName: row[4] || '',
+      caption: row[5] || '',
+      sortOrder: Number(row[6] || 0),
+      addedAt: row[7] || ''
+    };
+
+    if (!map.has(guideId)) {
+      map.set(guideId, []);
+    }
+
+    map.get(guideId).push(image);
+  });
+
+  map.forEach(images => {
+    images.sort((a, b) => a.sortOrder - b.sortOrder);
+  });
+
+  return map;
+}
+
+
+function ensureLegacyGuideImageReference_(guide) {
+  if (!guide || !guide.guideId || !guide.imageFileId) return;
+
+  const map = getFailureGuideImagesMap_();
+
+  if ((map.get(guide.guideId) || []).length) return;
+
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureGuideImagesSheet_(ss);
+
+  sh.appendRow([
+    clean_(createGuideImageId_(guide.guideId)),
+    clean_(guide.guideId),
+    clean_(guide.imageFileId),
+    clean_(guide.imageUrl),
+    clean_(guide.imageName),
+    'Legacy main image',
+    1,
+    Utilities.formatDate(
+      new Date(),
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy HH:mm:ss'
+    )
+  ]);
+}
+
+
+function migrateLegacyGuideImages_() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const guideSheet = ensureFailureGuideSheet_(ss);
+  const imageSheet = ensureFailureGuideImagesSheet_(ss);
+
+  if (guideSheet.getLastRow() < 2) return 0;
+
+  const existingMap = getFailureGuideImagesMap_();
+  const rows = guideSheet.getRange(
+    2,
+    1,
+    guideSheet.getLastRow() - 1,
+    FAILURE_GUIDE_HEADERS.length
+  ).getDisplayValues();
+
+  const appendRows = [];
+
+  rows.forEach((row, index) => {
+    const guide = guideRowToObject_(row, index + 2);
+
+    if (
+      guide.guideId &&
+      guide.imageFileId &&
+      !(existingMap.get(guide.guideId) || []).length
+    ) {
+      appendRows.push([
+        clean_(createGuideImageId_(guide.guideId)),
+        clean_(guide.guideId),
+        clean_(guide.imageFileId),
+        clean_(guide.imageUrl),
+        clean_(guide.imageName),
+        'Legacy main image',
+        1,
+        Utilities.formatDate(
+          new Date(),
+          CONFIG.TIMEZONE,
+          'dd/MM/yyyy HH:mm:ss'
+        )
+      ]);
+    }
+  });
+
+  if (appendRows.length) {
+    imageSheet.getRange(
+      imageSheet.getLastRow() + 1,
+      1,
+      appendRows.length,
+      FAILURE_GUIDE_IMAGE_HEADERS.length
+    ).setValues(appendRows);
+  }
+
+  return appendRows.length;
+}
+
+function parseImagesJson_(value) {
+  const text = String(value || '').trim();
+  if (!text) return [];
+
+  let data;
+
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error('imagesJson ไม่ถูกต้อง');
+  }
+
+  if (!Array.isArray(data)) {
+    throw new Error('imagesJson ต้องเป็น Array');
+  }
+
+  const images = data
+    .slice(0, 5)
+    .map(item => ({
+      name: optionalText_(item && item.name, 160),
+      mimeType: optionalText_(item && item.mimeType, 100),
+      base64: String((item && item.base64) || '').trim()
+    }))
+    .filter(item => item.base64);
+
+  const totalBase64 = images.reduce(
+    (sum, item) => sum + item.base64.length,
+    0
+  );
+
+  if (totalBase64 > 4000000) {
+    throw new Error('รูปหลายรูปรวมกันใหญ่เกินไป กรุณาลดจำนวน/ขนาดรูป');
+  }
+
+  return images;
+}
+
+
+function nextGuideImageSortOrder_(guideId) {
+  const map = getFailureGuideImagesMap_();
+  const images = map.get(String(guideId || '').trim()) || [];
+
+  return images.length
+    ? Math.max(...images.map(image => Number(image.sortOrder || 0))) + 1
+    : 1;
+}
+
+
+function saveGuideImages_(guideId, images) {
+  if (!images.length) return [];
+
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureGuideImagesSheet_(ss);
+  const startOrder = nextGuideImageSortOrder_(guideId);
+  const saved = [];
+
+  try {
+    images.forEach((item, index) => {
+      const image = saveImageIfProvided_(
+        guideId + '-IMG-' + String(startOrder + index),
+        {
+          imageBase64: item.base64,
+          imageMimeType: item.mimeType,
+          imageName: item.name
+        }
+      );
+
+      if (!image.fileId) return;
+
+      const row = {
+        imageId: createGuideImageId_(guideId),
+        guideId: guideId,
+        imageFileId: image.fileId,
+        imageUrl: image.url,
+        imageName: image.name,
+        caption: '',
+        sortOrder: startOrder + index,
+        addedAt: Utilities.formatDate(
+          new Date(),
+          CONFIG.TIMEZONE,
+          'dd/MM/yyyy HH:mm:ss'
+        )
+      };
+
+      sh.appendRow([
+        clean_(row.imageId),
+        clean_(row.guideId),
+        clean_(row.imageFileId),
+        clean_(row.imageUrl),
+        clean_(row.imageName),
+        clean_(row.caption),
+        row.sortOrder,
+        row.addedAt
+      ]);
+
+      saved.push(row);
+    });
+
+    return saved;
+
+  } catch (err) {
+    saved.forEach(image => {
+      trashRepairImageSafely_(image.imageFileId);
+    });
+
+    throw err;
+  }
+}
+
+
+function deleteGuideImages_(guideId) {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureGuideImagesSheet_(ss);
+
+  if (sh.getLastRow() < 2) return 0;
+
+  const rows = sh.getRange(
+    2,
+    1,
+    sh.getLastRow() - 1,
+    FAILURE_GUIDE_IMAGE_HEADERS.length
+  ).getDisplayValues();
+
+  const matches = [];
+
+  rows.forEach((row, index) => {
+    if (String(row[1] || '').trim() === String(guideId || '').trim()) {
+      matches.push({
+        rowNumber: index + 2,
+        fileId: row[2] || ''
+      });
+    }
+  });
+
+  matches
+    .sort((a, b) => b.rowNumber - a.rowNumber)
+    .forEach(item => {
+      sh.deleteRow(item.rowNumber);
+
+      if (item.fileId) {
+        trashRepairImageSafely_(item.fileId);
+      }
+    });
+
+  return matches.length;
+}
+
+
+function getBackupFolder_() {
+  const folders = DriveApp.getFoldersByName(CONFIG.BACKUP_FOLDER_NAME);
+
+  if (folders.hasNext()) {
+    return folders.next();
+  }
+
+  return DriveApp.createFolder(CONFIG.BACKUP_FOLDER_NAME);
+}
+
+
+function backupSheetNames_() {
+  return [
+    CONFIG.REPAIR_SHEET,
+    CONFIG.MODEL_SHEET,
+    CONFIG.FAILURE_GUIDE_SHEET,
+    CONFIG.FAILURE_GUIDE_IMAGES_SHEET,
+    CONFIG.FAILURE_SUMMARY_SHEET,
+    CONFIG.FAILURE_MASTER_SHEET,
+    CONFIG.FAILURE_ALIAS_SHEET,
+    CONFIG.AUDIT_SHEET
+  ];
+}
+
+
+function createProductionBackup_(tagValue, actorValue) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+
+      const tag = String(tagValue || 'DAILY').toUpperCase();
+      const now = new Date();
+      const stamp = Utilities.formatDate(
+        now,
+        CONFIG.TIMEZONE,
+        'yyyyMMdd_HHmmss'
+      );
+
+      const name = 'ATS1_Backup_' + tag + '_' + stamp;
+      const source = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+      const backup = SpreadsheetApp.create(name);
+      const defaultSheet = backup.getSheets()[0];
+
+      let copied = 0;
+
+      backupSheetNames_().forEach(sheetName => {
+        const sourceSheet = source.getSheetByName(sheetName);
+        if (!sourceSheet) return;
+
+        const copiedSheet = sourceSheet.copyTo(backup);
+        copiedSheet.setName(String(sheetName).slice(0, 99));
+        copied++;
+      });
+
+      if (copied > 0 && backup.getSheets().length > 1) {
+        backup.deleteSheet(defaultSheet);
+      }
+
+      const file = DriveApp.getFileById(backup.getId());
+      file.moveTo(getBackupFolder_());
+
+      const result = {
+        backupName: name,
+        backupId: backup.getId(),
+        backupUrl: backup.getUrl(),
+        tag: tag,
+        time: Utilities.formatDate(
+          now,
+          CONFIG.TIMEZONE,
+          'dd/MM/yyyy HH:mm:ss'
+        ),
+        copiedSheets: copied
+      };
+
+      PropertiesService
+        .getScriptProperties()
+        .setProperty('LAST_BACKUP_JSON', JSON.stringify(result));
+
+      cleanupBackupRetention_();
+
+      appendAudit_(
+        actorValue || 'SYSTEM',
+        'CREATE_BACKUP',
+        'BACKUP',
+        backup.getId(),
+        null,
+        result,
+        'Backup'
+      );
+
+      return result;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function cleanupBackupRetention_() {
+  const folder = getBackupFolder_();
+  const files = folder.getFiles();
+
+  const buckets = {
+    DAILY: [],
+    WEEKLY: [],
+    MONTHLY: [],
+    MANUAL: []
+  };
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const match = file.getName().match(
+      /^ATS1_Backup_(DAILY|WEEKLY|MONTHLY|MANUAL)_/
+    );
+
+    if (match) {
+      buckets[match[1]].push(file);
+    }
+  }
+
+  const limits = {
+    DAILY: 7,
+    WEEKLY: 4,
+    MONTHLY: 12,
+    MANUAL: 10
+  };
+
+  Object.keys(buckets).forEach(tag => {
+    buckets[tag]
+      .sort(
+        (a, b) =>
+          b.getDateCreated().getTime() -
+          a.getDateCreated().getTime()
+      )
+      .slice(limits[tag])
+      .forEach(file => file.setTrashed(true));
+  });
+}
+
+
+function runScheduledBackup() {
+  const now = new Date();
+  const day = Number(
+    Utilities.formatDate(now, CONFIG.TIMEZONE, 'd')
+  );
+  const weekday = Number(
+    Utilities.formatDate(now, CONFIG.TIMEZONE, 'u')
+  );
+
+  let tag = 'DAILY';
+
+  if (day === 1) {
+    tag = 'MONTHLY';
+  } else if (weekday === 7) {
+    tag = 'WEEKLY';
+  }
+
+  return createProductionBackup_(tag, 'SYSTEM');
+}
+
+
+function installDailyBackupTrigger_(actorValue) {
+  const handler = 'runScheduledBackup';
+
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === handler)
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+
+  ScriptApp
+    .newTrigger(handler)
+    .timeBased()
+    .atHour(2)
+    .nearMinute(0)
+    .everyDays(1)
+    .create();
+
+  appendAudit_(
+    actorValue || 'SYSTEM',
+    'INSTALL_BACKUP_TRIGGER',
+    'TRIGGER',
+    handler,
+    null,
+    { hour: 2, frequency: 'DAILY' },
+    'Backup'
+  );
+
+  return { triggerInstalled: true, hour: 2 };
+}
+
+
+function getBackupStatus_() {
+  const props = PropertiesService.getScriptProperties();
+  let lastBackup = null;
+  const text = props.getProperty('LAST_BACKUP_JSON');
+
+  if (text) {
+    try {
+      lastBackup = JSON.parse(text);
+    } catch (err) {
+      lastBackup = null;
+    }
+  }
+
+  const installed = ScriptApp.getProjectTriggers()
+    .some(
+      trigger =>
+        trigger.getHandlerFunction() === 'runScheduledBackup'
+    );
+
+  return {
+    ok: true,
+    lastBackup: lastBackup,
+    triggerInstalled: installed
+  };
+}
+
+
+/* =========================================================
+   FAILURE SUMMARY / DETAILED GUIDE
+========================================================= */
+
+function ensureFailureGuideSheet_(ss) {
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.FAILURE_GUIDE_SHEET,
+    FAILURE_GUIDE_HEADERS,
+    '#7F6000'
+  );
 }
 
 
 function ensureFailureSummarySheet_(ss) {
-  let sh = ss.getSheetByName(
-    CONFIG.FAILURE_SUMMARY_SHEET
+  return ensureSheetWithHeaders_(
+    ss,
+    CONFIG.FAILURE_SUMMARY_SHEET,
+    FAILURE_SUMMARY_HEADERS,
+    '#548235'
   );
-
-  if (!sh) {
-    sh = ss.insertSheet(
-      CONFIG.FAILURE_SUMMARY_SHEET
-    );
-  }
-
-  if (sh.getMaxColumns() < FAILURE_SUMMARY_HEADERS.length) {
-    sh.insertColumnsAfter(
-      sh.getMaxColumns(),
-      FAILURE_SUMMARY_HEADERS.length - sh.getMaxColumns()
-    );
-  }
-
-  sh.getRange(
-    1,
-    1,
-    1,
-    FAILURE_SUMMARY_HEADERS.length
-  )
-    .setValues([FAILURE_SUMMARY_HEADERS])
-    .setFontWeight('bold')
-    .setBackground('#548235')
-    .setFontColor('#FFFFFF');
-
-  sh.setFrozenRows(1);
-
-  return sh;
 }
 
 
 function buildFailureSummary_() {
-  const records = getRecords_();
-  const map = new Map();
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureSummarySheet_(ss);
 
-  // getRecords_ คืนค่าใหม่ -> เก่า
-  records.forEach(record => {
-    const display = String(
-      record.failure || ''
-    ).trim().replace(/\s+/g, ' ');
+  if (sh.getLastRow() < 2) {
+    const repair = ss.getSheetByName(CONFIG.REPAIR_SHEET);
 
-    const key = normalizeFailureKey_(display);
-
-    if (!key) return;
-
-    if (!map.has(key)) {
-      map.set(key, {
-        failureKey: key,
-        failure: display,
-        failCount: 0,
-        lastSeen: [
-          String(record.date || '').trim(),
-          String(record.time || '').trim()
-        ].filter(Boolean).join(' ')
-      });
+    if (repair && repair.getLastRow() >= 2) {
+      return rebuildFailureSummary_();
     }
 
-    map.get(key).failCount += 1;
-  });
+    return [];
+  }
 
-  return Array.from(map.values())
-    .sort((a, b) =>
-      b.failCount - a.failCount ||
-      a.failure.localeCompare(b.failure)
+  return sh.getRange(
+    2,
+    1,
+    sh.getLastRow() - 1,
+    FAILURE_SUMMARY_HEADERS.length
+  ).getDisplayValues()
+    .map(row => ({
+      failureKey: row[0] || '',
+      failure: row[1] || '',
+      failCount: Number(row[2] || 0),
+      lastSeen: row[3] || '',
+      updatedAt: row[4] || ''
+    }))
+    .filter(item => item.failure && item.failCount > 0)
+    .sort(
+      (a, b) =>
+        b.failCount - a.failCount ||
+        a.failure.localeCompare(b.failure)
     );
 }
 
 
-function syncFailureSummary_() {
-  const ss = SpreadsheetApp.openById(
-    CONFIG.SPREADSHEET_ID
-  );
+function repairRecordTimestamp_(record) {
+  const dateText = String((record && record.date) || '').trim();
+  const timeText = String((record && record.time) || '').trim();
+  const match = dateText.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
 
+  if (!match) return 0;
+
+  const time = timeText.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+
+  const d = Number(match[1]);
+  const m = Number(match[2]);
+  const y = Number(match[3]);
+  const hh = time ? Number(time[1]) : 0;
+  const mm = time ? Number(time[2]) : 0;
+  const ss = time ? Number(time[3] || 0) : 0;
+
+  const value = new Date(y, m - 1, d, hh, mm, ss, 0);
+  return Number.isNaN(value.getTime()) ? 0 : value.getTime();
+}
+
+
+function rebuildFailureSummary_() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sh = ensureFailureSummarySheet_(ss);
-  const summary = buildFailureSummary_();
+  const records = getRecords_();
+  const maps = getFailureResolverMaps_();
+  const map = new Map();
+  const newMasters = new Map();
+
+  records.forEach(record => {
+    const raw = String(record.failure || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return;
+
+    let canonical = resolveCanonicalFailureWithMaps_(raw, maps);
+    const rawKey = normalizeFailureKey_(raw);
+
+    if (
+      canonical === raw &&
+      !maps.masterMap.has(rawKey) &&
+      !maps.aliasMap.has(rawKey)
+    ) {
+      newMasters.set(rawKey, raw);
+    }
+
+    const key = normalizeFailureKey_(canonical);
+
+    if (!map.has(key)) {
+      map.set(key, {
+        failureKey: key,
+        failure: canonical,
+        failCount: 0,
+        lastSeen: '',
+        lastSeenTs: 0
+      });
+    }
+
+    const item = map.get(key);
+    item.failCount += 1;
+
+    const timestamp = repairRecordTimestamp_(record);
+
+    if (timestamp >= item.lastSeenTs) {
+      item.lastSeenTs = timestamp;
+      item.lastSeen = [record.date, record.time]
+        .filter(Boolean)
+        .join(' ');
+    }
+  });
+
+  if (newMasters.size) {
+    const now = Utilities.formatDate(
+      new Date(),
+      CONFIG.TIMEZONE,
+      'dd/MM/yyyy HH:mm:ss'
+    );
+
+    maps.master.getRange(
+      maps.master.getLastRow() + 1,
+      1,
+      newMasters.size,
+      FAILURE_MASTER_HEADERS.length
+    ).setValues(
+      Array.from(newMasters.entries()).map(([key, failure]) => [
+        clean_(failure),
+        clean_(key),
+        'ACTIVE',
+        now,
+        now
+      ])
+    );
+  }
+
+  const summary = Array.from(map.values())
+    .sort(
+      (a, b) =>
+        b.failCount - a.failCount ||
+        a.failure.localeCompare(b.failure)
+    );
 
   const lastRow = sh.getLastRow();
 
@@ -1645,10 +3215,7 @@ function syncFailureSummary_() {
       2,
       1,
       lastRow - 1,
-      Math.max(
-        sh.getLastColumn(),
-        FAILURE_SUMMARY_HEADERS.length
-      )
+      Math.max(sh.getLastColumn(), FAILURE_SUMMARY_HEADERS.length)
     ).clearContent();
   }
 
@@ -1659,20 +3226,20 @@ function syncFailureSummary_() {
       'dd/MM/yyyy HH:mm:ss'
     );
 
-    const rows = summary.map(item => [
-      clean_(item.failureKey),
-      clean_(item.failure),
-      Number(item.failCount || 0),
-      clean_(item.lastSeen),
-      updatedAt
-    ]);
-
     sh.getRange(
       2,
       1,
-      rows.length,
+      summary.length,
       FAILURE_SUMMARY_HEADERS.length
-    ).setValues(rows);
+    ).setValues(
+      summary.map(item => [
+        clean_(item.failureKey),
+        clean_(item.failure),
+        Number(item.failCount),
+        clean_(item.lastSeen),
+        updatedAt
+      ])
+    );
   }
 
   SpreadsheetApp.flush();
@@ -1681,56 +3248,209 @@ function syncFailureSummary_() {
 }
 
 
-/**
- * Failure_Summary เป็นข้อมูลสรุปเสริม
- * ห้ามทำให้ Repair_Log Save/Edit/Delete ที่สำเร็จแล้ว
- * กลายเป็น Error เพราะ Summary เขียนไม่สำเร็จ
- */
-function safeSyncFailureSummary_() {
-  try {
-    const summary = syncFailureSummary_();
+function syncFailureSummary_() {
+  return rebuildFailureSummary_();
+}
 
-    return {
-      ok: true,
-      count: summary.length
-    };
 
-  } catch (err) {
-    console.log(
-      'Failure_Summary sync failed: ' +
-      String(err.message || err)
+function findLatestFailureSeen_(failureValue) {
+  const maps = getFailureResolverMaps_();
+  const targetKey = normalizeFailureKey_(
+    resolveCanonicalFailureWithMaps_(failureValue, maps)
+  );
+
+  const matches = getRecords_()
+    .filter(item => {
+      const canonical = resolveCanonicalFailureWithMaps_(item.failure, maps);
+      return normalizeFailureKey_(canonical) === targetKey;
+    })
+    .sort(
+      (a, b) =>
+        repairRecordTimestamp_(b) -
+        repairRecordTimestamp_(a)
     );
 
-    return {
-      ok: false,
-      error: String(err.message || err)
-    };
+  const record = matches[0];
+
+  return record
+    ? [record.date, record.time].filter(Boolean).join(' ')
+    : '';
+}
+
+function incrementFailureSummary_(failureValue, deltaValue, lastSeenValue) {
+  const canonical = resolveCanonicalFailure_(failureValue, true);
+  const key = normalizeFailureKey_(canonical);
+  if (!key) return;
+
+  const delta = Number(deltaValue || 0);
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const sh = ensureFailureSummarySheet_(ss);
+  const nowText = Utilities.formatDate(
+    new Date(),
+    CONFIG.TIMEZONE,
+    'dd/MM/yyyy HH:mm:ss'
+  );
+
+  let rowNumber = -1;
+
+  if (sh.getLastRow() >= 2) {
+    const keys = sh.getRange(
+      2,
+      1,
+      sh.getLastRow() - 1,
+      1
+    ).getDisplayValues().flat();
+
+    const index = keys.findIndex(
+      value => String(value || '').trim() === key
+    );
+
+    if (index >= 0) rowNumber = index + 2;
+  }
+
+  if (rowNumber < 0) {
+    if (delta <= 0) {
+      // Summary may be missing/stale after a manual Sheet edit.
+      rebuildFailureSummary_();
+      return;
+    }
+
+    sh.appendRow([
+      clean_(key),
+      clean_(canonical),
+      delta,
+      clean_(lastSeenValue || ''),
+      nowText
+    ]);
+    return;
+  }
+
+  const current = Number(sh.getRange(rowNumber, 3).getValue() || 0);
+  const next = current + delta;
+
+  if (next <= 0) {
+    sh.deleteRow(rowNumber);
+    return;
+  }
+
+  let lastSeen = String(lastSeenValue || '').trim();
+
+  if (!lastSeen && delta < 0) {
+    lastSeen = findLatestFailureSeen_(canonical);
+  }
+
+  if (!lastSeen) {
+    lastSeen = sh.getRange(rowNumber, 4).getDisplayValue();
+  }
+
+  sh.getRange(
+    rowNumber,
+    1,
+    1,
+    FAILURE_SUMMARY_HEADERS.length
+  ).setValues([[
+    clean_(key),
+    clean_(canonical),
+    next,
+    clean_(lastSeen),
+    nowText
+  ]]);
+}
+
+
+function safeSyncFailureSummary_() {
+  try {
+    const summary = rebuildFailureSummary_();
+    return { ok: true, count: summary.length };
+  } catch (err) {
+    console.log(
+      'Failure_Summary rebuild failed: ' +
+      String(err.message || err)
+    );
+    return { ok: false, error: String(err.message || err) };
   }
 }
 
 
+function getFailureAnalytics_(canonicalFailure) {
+  const maps = getFailureResolverMaps_();
+  const targetKey = normalizeFailureKey_(canonicalFailure);
+
+  const records = getRecords_()
+    .filter(record => {
+      const resolved = resolveCanonicalFailureWithMaps_(record.failure, maps);
+      return normalizeFailureKey_(resolved) === targetKey;
+    })
+    .sort(
+      (a, b) =>
+        repairRecordTimestamp_(b) -
+        repairRecordTimestamp_(a)
+    );
+
+  const repairTimes = records
+    .map(record => Number(record.repairTime || 0))
+    .filter(value => Number.isFinite(value) && value >= 0);
+
+  const avgRepairTime = repairTimes.length
+    ? repairTimes.reduce((sum, value) => sum + value, 0) / repairTimes.length
+    : 0;
+
+  const aggregate = field => {
+    const map = new Map();
+
+    records.forEach(record => {
+      const value = String(record[field] || '').trim() || '(ไม่ระบุ)';
+      map.set(value, (map.get(value) || 0) + 1);
+    });
+
+    return Array.from(map.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort(
+        (a, b) =>
+          b.count - a.count ||
+          a.name.localeCompare(b.name)
+      );
+  };
+
+  return {
+    avgRepairTime: avgRepairTime,
+    lastSeen: records.length
+      ? [records[0].date, records[0].time].filter(Boolean).join(' ')
+      : '',
+    modelBreakdown: aggregate('model'),
+    stationBreakdown: aggregate('station'),
+    recent: records.slice(0, 5).map(record => ({
+      repairId: record.repairId,
+      date: record.date,
+      time: record.time,
+      model: record.model,
+      station: record.station,
+      repairTime: record.repairTime,
+      repairBy: record.repairBy
+    }))
+  };
+}
+
+
 function getFailureDetail_(failureValue) {
-  const failure = requireText_(
+  const requested = requireText_(
     failureValue,
     'Failure / Symptom',
     1500
   );
 
-  const key = normalizeFailureKey_(failure);
-
+  const canonical = resolveCanonicalFailure_(requested, false);
+  const key = normalizeFailureKey_(canonical);
   const summaryItem = buildFailureSummary_()
     .find(item => item.failureKey === key);
 
   return {
     ok: true,
-    failure: summaryItem
-      ? summaryItem.failure
-      : failure,
+    failure: summaryItem ? summaryItem.failure : canonical,
     failureKey: key,
-    failCount: summaryItem
-      ? summaryItem.failCount
-      : 0,
-    guides: getFailureGuides_(failure)
+    failCount: summaryItem ? summaryItem.failCount : 0,
+    guides: getFailureGuides_(canonical),
+    analytics: getFailureAnalytics_(canonical)
   };
 }
 
@@ -1753,43 +3473,66 @@ function guideRowToObject_(row, sheetRow) {
     imageUrl: values[8] || '',
     imageName: values[9] || '',
     updatedDate: values[10] || '',
-    updatedTime: values[11] || ''
+    updatedTime: values[11] || '',
+    rootCause: values[12] || '',
+    checkPoint: values[13] || '',
+    expectedValue: values[14] || '',
+    verification: values[15] || '',
+    toolEquipment: values[16] || '',
+    relatedModel: values[17] || '',
+    relatedStation: values[18] || '',
+    images: []
   };
 }
 
 
 function getFailureGuides_(failureValue) {
-  const ss = SpreadsheetApp.openById(
-    CONFIG.SPREADSHEET_ID
-  );
-
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const sh = ensureFailureGuideSheet_(ss);
   const lastRow = sh.getLastRow();
 
   if (lastRow < 2) return [];
 
-  const rows = sh.getRange(
+  const maps = getFailureResolverMaps_();
+  const requestedCanonical = failureValue
+    ? resolveCanonicalFailureWithMaps_(failureValue, maps)
+    : '';
+  const requestedKey = normalizeFailureKey_(requestedCanonical);
+  const imageMap = getFailureGuideImagesMap_();
+
+  return sh.getRange(
     2,
     1,
     lastRow - 1,
     FAILURE_GUIDE_HEADERS.length
-  ).getDisplayValues();
+  ).getDisplayValues()
+    .map((row, index) => guideRowToObject_(row, index + 2))
+    .filter(guide => {
+      if (!guide.guideId) return false;
+      if (!requestedKey) return true;
 
-  const requestedKey = normalizeFailureKey_(
-    failureValue || ''
-  );
+      const canonical = resolveCanonicalFailureWithMaps_(guide.failure, maps);
+      return normalizeFailureKey_(canonical) === requestedKey;
+    })
+    .map(guide => {
+      const images = [...(imageMap.get(guide.guideId) || [])];
 
-  return rows
-    .map((row, index) =>
-      guideRowToObject_(row, index + 2)
-    )
-    .filter(guide =>
-      guide.guideId &&
-      (
-        !requestedKey ||
-        normalizeFailureKey_(guide.failure) === requestedKey
-      )
-    )
+      if (!images.length && guide.imageFileId) {
+        images.push({
+          imageId: '',
+          guideId: guide.guideId,
+          imageFileId: guide.imageFileId,
+          imageUrl: guide.imageUrl,
+          imageName: guide.imageName,
+          caption: '',
+          sortOrder: 1,
+          addedAt: ''
+        });
+      }
+
+      guide.images = images;
+      return guide;
+    })
     .reverse();
 }
 
@@ -1815,46 +3558,31 @@ function createFailureGuideId_(sh, now) {
 
     ids.forEach(value => {
       const id = String(value || '').trim();
-
       if (!id.startsWith(prefix)) return;
 
-      const n = parseInt(
-        id.slice(prefix.length),
-        10
-      );
-
+      const n = parseInt(id.slice(prefix.length), 10);
       if (Number.isFinite(n)) {
         maxSeq = Math.max(maxSeq, n);
       }
     });
   }
 
-  return prefix +
-    String(maxSeq + 1).padStart(4, '0');
+  return prefix + String(maxSeq + 1).padStart(4, '0');
 }
 
 
-function saveFailureGuide_(p) {
+function saveFailureGuide_(p, actorEmail) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
 
-  let image = {
-    fileId: '',
-    url: '',
-    name: ''
-  };
+  let savedImages = [];
 
   try {
-    const ss = SpreadsheetApp.openById(
-      CONFIG.SPREADSHEET_ID
-    );
-
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sh = ensureFailureGuideSheet_(ss);
 
-    const failure = requireText_(
-      p.failure,
-      'Failure / Symptom',
-      1500
+    const failure = ensureFailureMasterEntry_(
+      requireText_(p.failure, 'Failure / Symptom', 1500)
     );
 
     const detail = requireText_(
@@ -1863,35 +3591,40 @@ function saveFailureGuide_(p) {
       12000
     );
 
-    const author = optionalText_(
-      p.author,
-      120
-    );
-
+    const author = optionalText_(p.author, 120);
     const now = new Date();
-    const guideId = createFailureGuideId_(
-      sh,
-      now
-    );
+    const guideId = createFailureGuideId_(sh, now);
 
-    image = saveImageIfProvided_(
-      guideId,
-      p
-    );
+    let images = parseImagesJson_(p.imagesJson);
+
+    if (!images.length && String(p.imageBase64 || '').trim()) {
+      images = [{
+        name: p.imageName || '',
+        mimeType: p.imageMimeType || '',
+        base64: p.imageBase64 || ''
+      }];
+    }
+
+    savedImages = saveGuideImages_(guideId, images);
+
+    const mainImage = savedImages[0] || {
+      imageFileId: '',
+      imageUrl: '',
+      imageName: ''
+    };
 
     const dateText = Utilities.formatDate(
       now,
       CONFIG.TIMEZONE,
       'dd/MM/yyyy'
     );
-
     const timeText = Utilities.formatDate(
       now,
       CONFIG.TIMEZONE,
       'HH:mm:ss'
     );
 
-    sh.appendRow([
+    const row = [
       clean_(guideId),
       clean_(normalizeFailureKey_(failure)),
       clean_(failure),
@@ -1899,27 +3632,50 @@ function saveFailureGuide_(p) {
       clean_(author),
       dateText,
       timeText,
-      clean_(image.fileId),
-      clean_(image.url),
-      clean_(image.name),
+      clean_(mainImage.imageFileId),
+      clean_(mainImage.imageUrl),
+      clean_(mainImage.imageName),
       '',
-      ''
-    ]);
+      '',
+      clean_(optionalText_(p.rootCause, 5000)),
+      clean_(optionalText_(p.checkPoint, 5000)),
+      clean_(optionalText_(p.expectedValue, 5000)),
+      clean_(optionalText_(p.verification, 5000)),
+      clean_(optionalText_(p.toolEquipment, 500)),
+      clean_(optionalText_(p.relatedModel, 500)),
+      clean_(optionalText_(p.relatedStation, 500))
+    ];
 
+    sh.appendRow(row);
     SpreadsheetApp.flush();
+
+    appendAudit_(
+      actorEmail || author || 'unknown',
+      'CREATE_GUIDE',
+      'FAILURE_GUIDE',
+      guideId,
+      null,
+      {
+        failure: failure,
+        detail: detail,
+        imageCount: savedImages.length
+      },
+      'User'
+    );
 
     return {
       guideId: guideId,
       failure: failure,
-      imageFileId: image.fileId || ''
+      imageCount: savedImages.length,
+      imageFileId: mainImage.imageFileId || ''
     };
 
   } catch (err) {
-    if (image.fileId) {
-      trashRepairImageSafely_(
-        image.fileId
-      );
-    }
+    savedImages.forEach(image => {
+      if (image.imageFileId) {
+        trashRepairImageSafely_(image.imageFileId);
+      }
+    });
 
     throw err;
 
@@ -1930,15 +3686,10 @@ function saveFailureGuide_(p) {
 
 
 function optionalText_(value, maxLength) {
-  let text = String(
-    value ?? ''
-  ).trim();
+  let text = String(value ?? '').trim();
 
   if (text.length > maxLength) {
-    text = text.slice(
-      0,
-      maxLength
-    );
+    text = text.slice(0, maxLength);
   }
 
   return text;
@@ -1946,22 +3697,16 @@ function optionalText_(value, maxLength) {
 
 
 function findFailureGuideRow_(sh, guideIdValue) {
-  const guideId = String(
-    guideIdValue || ''
-  ).trim();
+  const guideId = String(guideIdValue || '').trim();
 
   if (!guideId) {
-    throw new Error(
-      'ไม่พบ Guide ID'
-    );
+    throw new Error('ไม่พบ Guide ID');
   }
 
   const lastRow = sh.getLastRow();
 
   if (lastRow < 2) {
-    throw new Error(
-      'ยังไม่มี Failure Guide'
-    );
+    throw new Error('ยังไม่มี Failure Guide');
   }
 
   const ids = sh.getRange(
@@ -1974,18 +3719,13 @@ function findFailureGuideRow_(sh, guideIdValue) {
   const matches = [];
 
   ids.forEach((value, index) => {
-    if (
-      String(value || '').trim() === guideId
-    ) {
+    if (String(value || '').trim() === guideId) {
       matches.push(index + 2);
     }
   });
 
   if (!matches.length) {
-    throw new Error(
-      'ไม่พบ Guide ID: ' +
-      guideId
-    );
+    throw new Error('ไม่พบ Guide ID: ' + guideId);
   }
 
   if (matches.length > 1) {
@@ -2000,27 +3740,16 @@ function findFailureGuideRow_(sh, guideIdValue) {
 }
 
 
-function adminUpdateFailureGuide_(p) {
+function adminUpdateFailureGuide_(p, actorValue) {
   const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
+  lock.waitLock(20000);
 
-  let newImage = {
-    fileId: '',
-    url: '',
-    name: ''
-  };
+  let newlySaved = [];
 
   try {
-    const ss = SpreadsheetApp.openById(
-      CONFIG.SPREADSHEET_ID
-    );
-
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sh = ensureFailureGuideSheet_(ss);
-
-    const rowNumber = findFailureGuideRow_(
-      sh,
-      p.guideId
-    );
+    const rowNumber = findFailureGuideRow_(sh, p.guideId);
 
     const oldRow = sh.getRange(
       rowNumber,
@@ -2029,66 +3758,76 @@ function adminUpdateFailureGuide_(p) {
       FAILURE_GUIDE_HEADERS.length
     ).getDisplayValues()[0];
 
-    const oldGuide = guideRowToObject_(
-      oldRow,
-      rowNumber
-    );
+    const oldGuide = guideRowToObject_(oldRow, rowNumber);
+    ensureLegacyGuideImageReference_(oldGuide);
 
-    const failure = requireText_(
-      p.failure,
-      'Failure / Symptom',
-      1500
+    const failure = ensureFailureMasterEntry_(
+      requireText_(p.failure, 'Failure / Symptom', 1500)
     );
-
     const detail = requireText_(
       p.detail,
       'วิธีแก้ไขแบบละเอียด',
       12000
     );
+    const author = optionalText_(p.author, 120);
 
-    const author = optionalText_(
-      p.author,
-      120
-    );
+    let images = parseImagesJson_(p.imagesJson);
 
-    let fileId = oldGuide.imageFileId;
-    let imageUrl = oldGuide.imageUrl;
-    let imageName = oldGuide.imageName;
-    let oldImageToTrash = '';
-
-    if (String(p.imageBase64 || '').trim()) {
-      newImage = saveImageIfProvided_(
-        oldGuide.guideId,
-        p
-      );
-
-      oldImageToTrash = fileId;
-      fileId = newImage.fileId;
-      imageUrl = newImage.url;
-      imageName = newImage.name;
-
-    } else if (
-      String(p.removeImage || '') === 'true'
-    ) {
-      oldImageToTrash = fileId;
-      fileId = '';
-      imageUrl = '';
-      imageName = '';
+    if (!images.length && String(p.imageBase64 || '').trim()) {
+      images = [{
+        name: p.imageName || '',
+        mimeType: p.imageMimeType || '',
+        base64: p.imageBase64 || ''
+      }];
     }
 
-    const now = new Date();
+    if (String(p.removeImage || '') === 'true') {
+      deleteGuideImages_(oldGuide.guideId);
+    }
+
+    if (images.length) {
+      newlySaved = saveGuideImages_(oldGuide.guideId, images);
+    }
+
+    const currentImages = getFailureGuideImagesMap_()
+      .get(oldGuide.guideId) || [];
+
+    const mainImage = currentImages[0] || {
+      imageFileId: '',
+      imageUrl: '',
+      imageName: ''
+    };
 
     const updatedDate = Utilities.formatDate(
-      now,
+      new Date(),
       CONFIG.TIMEZONE,
       'dd/MM/yyyy'
     );
-
     const updatedTime = Utilities.formatDate(
-      now,
+      new Date(),
       CONFIG.TIMEZONE,
       'HH:mm:ss'
     );
+
+    const newGuide = {
+      ...oldGuide,
+      failure: failure,
+      failureKey: normalizeFailureKey_(failure),
+      detail: detail,
+      author: author,
+      imageFileId: mainImage.imageFileId || '',
+      imageUrl: mainImage.imageUrl || '',
+      imageName: mainImage.imageName || '',
+      updatedDate: updatedDate,
+      updatedTime: updatedTime,
+      rootCause: optionalText_(p.rootCause, 5000),
+      checkPoint: optionalText_(p.checkPoint, 5000),
+      expectedValue: optionalText_(p.expectedValue, 5000),
+      verification: optionalText_(p.verification, 5000),
+      toolEquipment: optionalText_(p.toolEquipment, 500),
+      relatedModel: optionalText_(p.relatedModel, 500),
+      relatedStation: optionalText_(p.relatedStation, 500)
+    };
 
     sh.getRange(
       rowNumber,
@@ -2096,42 +3835,51 @@ function adminUpdateFailureGuide_(p) {
       1,
       FAILURE_GUIDE_HEADERS.length
     ).setValues([[
-      clean_(oldGuide.guideId),
-      clean_(normalizeFailureKey_(failure)),
-      clean_(failure),
-      clean_(detail),
-      clean_(author),
-      clean_(oldGuide.date),
-      clean_(oldGuide.time),
-      clean_(fileId),
-      clean_(imageUrl),
-      clean_(imageName),
-      updatedDate,
-      updatedTime
+      clean_(newGuide.guideId),
+      clean_(newGuide.failureKey),
+      clean_(newGuide.failure),
+      clean_(newGuide.detail),
+      clean_(newGuide.author),
+      clean_(newGuide.date),
+      clean_(newGuide.time),
+      clean_(newGuide.imageFileId),
+      clean_(newGuide.imageUrl),
+      clean_(newGuide.imageName),
+      clean_(newGuide.updatedDate),
+      clean_(newGuide.updatedTime),
+      clean_(newGuide.rootCause),
+      clean_(newGuide.checkPoint),
+      clean_(newGuide.expectedValue),
+      clean_(newGuide.verification),
+      clean_(newGuide.toolEquipment),
+      clean_(newGuide.relatedModel),
+      clean_(newGuide.relatedStation)
     ]]);
 
     SpreadsheetApp.flush();
 
-    if (
-      oldImageToTrash &&
-      oldImageToTrash !== fileId
-    ) {
-      trashRepairImageSafely_(
-        oldImageToTrash
-      );
-    }
+    appendAudit_(
+      actorValue || 'Admin',
+      'UPDATE_GUIDE',
+      'FAILURE_GUIDE',
+      oldGuide.guideId,
+      oldGuide,
+      newGuide,
+      'Admin'
+    );
 
     return {
       guideId: oldGuide.guideId,
-      updated: true
+      updated: true,
+      addedImages: newlySaved.length
     };
 
   } catch (err) {
-    if (newImage.fileId) {
-      trashRepairImageSafely_(
-        newImage.fileId
-      );
-    }
+    newlySaved.forEach(image => {
+      if (image.imageFileId) {
+        trashRepairImageSafely_(image.imageFileId);
+      }
+    });
 
     throw err;
 
@@ -2141,21 +3889,14 @@ function adminUpdateFailureGuide_(p) {
 }
 
 
-function adminDeleteFailureGuide_(p) {
+function adminDeleteFailureGuide_(p, actorValue) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
 
   try {
-    const ss = SpreadsheetApp.openById(
-      CONFIG.SPREADSHEET_ID
-    );
-
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sh = ensureFailureGuideSheet_(ss);
-
-    const rowNumber = findFailureGuideRow_(
-      sh,
-      p.guideId
-    );
+    const rowNumber = findFailureGuideRow_(sh, p.guideId);
 
     const row = sh.getRange(
       rowNumber,
@@ -2164,23 +3905,27 @@ function adminDeleteFailureGuide_(p) {
       FAILURE_GUIDE_HEADERS.length
     ).getDisplayValues()[0];
 
-    const guide = guideRowToObject_(
-      row,
-      rowNumber
-    );
+    const guide = guideRowToObject_(row, rowNumber);
+    ensureLegacyGuideImageReference_(guide);
 
     sh.deleteRow(rowNumber);
+    const deletedImages = deleteGuideImages_(guide.guideId);
     SpreadsheetApp.flush();
 
-    if (guide.imageFileId) {
-      trashRepairImageSafely_(
-        guide.imageFileId
-      );
-    }
+    appendAudit_(
+      actorValue || 'Admin',
+      'DELETE_GUIDE',
+      'FAILURE_GUIDE',
+      guide.guideId,
+      guide,
+      null,
+      'Admin'
+    );
 
     return {
       guideId: guide.guideId,
-      deleted: true
+      deleted: true,
+      deletedImages: deletedImages
     };
 
   } finally {
@@ -2188,6 +3933,156 @@ function adminDeleteFailureGuide_(p) {
   }
 }
 
+
+function adminMergeFailure_(sourceValue, targetValue, actorValue) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+
+  try {
+    const source = requireText_(sourceValue, 'Source Failure', 1500);
+    const target = ensureFailureMasterEntry_(
+      requireText_(targetValue, 'Target Failure', 1500)
+    );
+
+    const maps = getFailureResolverMaps_();
+    const sourceCanonical = resolveCanonicalFailureWithMaps_(source, maps);
+    const sourceKey = normalizeFailureKey_(sourceCanonical);
+    const rawSourceKey = normalizeFailureKey_(source);
+    const targetKey = normalizeFailureKey_(target);
+
+    if (sourceKey === targetKey || rawSourceKey === targetKey) {
+      throw new Error('Source และ Target เป็น Failure เดียวกันอยู่แล้ว');
+    }
+
+    const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+    const repair = ss.getSheetByName(CONFIG.REPAIR_SHEET);
+    let repairRows = 0;
+
+    if (repair && repair.getLastRow() >= 2) {
+      const lastCol = Math.max(
+        repair.getLastColumn(),
+        CANONICAL_HEADERS.length
+      );
+
+      const rows = repair.getRange(
+        2,
+        1,
+        repair.getLastRow() - 1,
+        lastCol
+      ).getDisplayValues();
+
+      rows.forEach((row, index) => {
+        const record = parseRepairRow_(row, index + 2);
+        const rawKey = normalizeFailureKey_(record.failure);
+        const resolvedKey = normalizeFailureKey_(
+          resolveCanonicalFailureWithMaps_(record.failure, maps)
+        );
+
+        if (rawKey !== rawSourceKey && resolvedKey !== sourceKey) {
+          return;
+        }
+
+        record.failure = target;
+
+        repair.getRange(index + 2, 1, 1, lastCol).clearContent();
+        repair.getRange(
+          index + 2,
+          1,
+          1,
+          CANONICAL_HEADERS.length
+        ).setValues([recordToCanonicalRow_(record)]);
+
+        repairRows++;
+      });
+    }
+
+    const guide = ensureFailureGuideSheet_(ss);
+    let guideRows = 0;
+
+    if (guide.getLastRow() >= 2) {
+      const rows = guide.getRange(
+        2,
+        1,
+        guide.getLastRow() - 1,
+        FAILURE_GUIDE_HEADERS.length
+      ).getDisplayValues();
+
+      rows.forEach((row, index) => {
+        const item = guideRowToObject_(row, index + 2);
+        const rawKey = normalizeFailureKey_(item.failure);
+        const resolvedKey = normalizeFailureKey_(
+          resolveCanonicalFailureWithMaps_(item.failure, maps)
+        );
+
+        if (rawKey !== rawSourceKey && resolvedKey !== sourceKey) {
+          return;
+        }
+
+        guide.getRange(index + 2, 2, 1, 2).setValues([[
+          clean_(targetKey),
+          clean_(target)
+        ]]);
+
+        guideRows++;
+      });
+    }
+
+    addFailureAlias_(sourceCanonical, target);
+
+    if (rawSourceKey !== sourceKey) {
+      addFailureAlias_(source, target);
+    }
+
+    markFailureMasterMerged_(sourceCanonical, target);
+
+    const alias = ensureFailureAliasSheet_(ss);
+
+    if (alias.getLastRow() >= 2) {
+      const rows = alias.getRange(
+        2,
+        1,
+        alias.getLastRow() - 1,
+        FAILURE_ALIAS_HEADERS.length
+      ).getDisplayValues();
+
+      rows.forEach((row, index) => {
+        if (normalizeFailureKey_(row[2]) === sourceKey) {
+          alias.getRange(index + 2, 3, 1, 2).setValues([[
+            clean_(target),
+            clean_(targetKey)
+          ]]);
+        }
+      });
+    }
+
+    rebuildFailureSummary_();
+    SpreadsheetApp.flush();
+
+    appendAudit_(
+      actorValue || 'Admin',
+      'MERGE_FAILURE',
+      'FAILURE_MASTER',
+      sourceCanonical,
+      { source: sourceCanonical },
+      {
+        target: target,
+        repairRows: repairRows,
+        guideRows: guideRows
+      },
+      'Admin'
+    );
+
+    return {
+      source: sourceCanonical,
+      target: target,
+      repairRows: repairRows,
+      guideRows: guideRows
+    };
+
+  } finally {
+    lock.releaseLock();
+  }
+}
 
 
 /* =========================================================

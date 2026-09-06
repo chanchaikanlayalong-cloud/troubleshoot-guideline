@@ -1,5 +1,5 @@
-const FRONTEND_VERSION = 'V22.6';
-const REQUIRED_BACKEND_VERSION = 'V22.2';
+const FRONTEND_VERSION = 'V23.0';
+const REQUIRED_BACKEND_VERSION = 'V23.0';
 
 const HISTORY_DISPLAY_ORDER = Object.freeze([
   "failure",
@@ -34,8 +34,13 @@ let allRecords = [];
 let selectedImage = null;
 let adminLoggedIn = false;
 let adminSessionUser = "";
-let adminSessionPassword = "";
+let adminSessionToken = "";
 let adminSelectedRepairId = "";
+let historyCurrentPage = 1;
+let allFailureMasters = [];
+let selectedFailureGuideImages = [];
+let adminGuideNewImages = [];
+let isNetworkOnline = navigator.onLine;
 let activeFailureName = "";
 let currentFailureGuides = [];
 let currentFailureCount = 0;
@@ -56,6 +61,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindDashboard();
   bindAdmin();
   bindFailureGuide();
+  bindProductionRuntime();
 
   try {
     await loadConfig();
@@ -536,18 +542,49 @@ function bindHistory() {
     await refreshAllData({ showToast: true });
   });
 
-  $("#searchBox").addEventListener("input", renderHistory);
-  $("#filterModel").addEventListener("change", renderHistory);
+  const resetAndRender = () => {
+    historyCurrentPage = 1;
+    renderHistory();
+  };
 
-  $("#exportHistoryExcelBtn").addEventListener(
-    "click",
-    exportCurrentHistoryExcel
-  );
+  $("#searchBox").addEventListener("input", resetAndRender);
+  $("#filterModel").addEventListener("change", resetAndRender);
+  $("#filterStation").addEventListener("change", resetAndRender);
+  $("#filterDateFrom").addEventListener("change", resetAndRender);
+  $("#filterDateTo").addEventListener("change", resetAndRender);
+  $("#historySortBy").addEventListener("change", resetAndRender);
+  $("#historyPageSize").addEventListener("change", resetAndRender);
 
-  $("#exportFailureGuideExcelBtn").addEventListener(
-    "click",
-    exportFailureGuidesExcel
-  );
+  $("#clearHistoryFiltersBtn").addEventListener("click", () => {
+    $("#searchBox").value = "";
+    $("#filterModel").value = "";
+    $("#filterStation").value = "";
+    $("#filterDateFrom").value = "";
+    $("#filterDateTo").value = "";
+    $("#historySortBy").value = "newest";
+    historyCurrentPage = 1;
+    renderHistory();
+  });
+
+  $("#historyPrevBtn").addEventListener("click", () => {
+    if (historyCurrentPage > 1) {
+      historyCurrentPage -= 1;
+      renderHistory();
+    }
+  });
+
+  $("#historyNextBtn").addEventListener("click", () => {
+    const total = getCurrentHistoryFilteredRecords().length;
+    const pageSize = Number($("#historyPageSize").value || 50);
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    if (historyCurrentPage < totalPages) {
+      historyCurrentPage += 1;
+      renderHistory();
+    }
+  });
+
+  $("#exportHistoryExcelBtn").addEventListener("click", exportCurrentHistoryExcel);
+  $("#exportFailureGuideExcelBtn").addEventListener("click", exportFailureGuidesExcel);
 }
 
 function jsonp(action, extra = {}) {
@@ -704,6 +741,7 @@ async function loadHistory() {
     validateHistoryRecordApi(records);
     allRecords = records;
     syncHistoryModelFilterFromRecords();
+    initializeHistoryFilterOptions();
     renderHistory();
     initializeDashboardOptions();
     renderDashboard();
@@ -854,19 +892,46 @@ async function waitForRecordState(repairId, predicate, attempts = 5) {
 }
 
 
+function initializeHistoryFilterOptions() {
+  const stations = uniqueSorted(
+    allRecords.map(r => String(r.station || "").trim()).filter(Boolean)
+  );
+
+  const currentStation = $("#filterStation").value;
+  $("#filterStation").innerHTML =
+    '<option value="">ทุก Station</option>' +
+    stations.map(v => `<option value="${escAttr(v)}">${esc(v)}</option>`).join("");
+
+  if (stations.includes(currentStation)) {
+    $("#filterStation").value = currentStation;
+  }
+}
+
+function recordTimestampForSort(record) {
+  const date = parseRepairDate(record.date);
+  if (!date) return 0;
+  const m = String(record.time || "").match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (m) {
+    date.setHours(Number(m[1]) || 0, Number(m[2]) || 0, Number(m[3]) || 0, 0);
+  }
+  return date.getTime();
+}
+
 function getCurrentHistoryFilteredRecords() {
   const q = $("#searchBox").value.trim().toLowerCase();
   const model = $("#filterModel").value;
+  const station = $("#filterStation").value;
+  const dateFrom = $("#filterDateFrom").value;
+  const dateTo = $("#filterDateTo").value;
+  const sortBy = $("#historySortBy").value || "newest";
 
-  /*
-   * History ไม่มี Model sort.
-   * filterModel เป็น Filter เท่านั้น.
-   *
-   * allRecords มาจาก Backend ใหม่ -> เก่า ดังนั้นลำดับเดิม
-   * ของ History คือ Record ใหม่สุดก่อน และ Export ใช้ลำดับเดียวกัน.
-   */
-  return allRecords.filter(r => {
-    const modelOk = !model || String(r.model) === model;
+  let filtered = allRecords.filter(r => {
+    if (model && String(r.model) !== model) return false;
+    if (station && String(r.station) !== station) return false;
+
+    const date = parseRepairDate(r.date);
+    if (dateFrom && (!date || toDateInputValue(date) < dateFrom)) return false;
+    if (dateTo && (!date || toDateInputValue(date) > dateTo)) return false;
 
     const blob = [
       r.repairId, r.date, r.time, r.model, r.station,
@@ -874,71 +939,80 @@ function getCurrentHistoryFilteredRecords() {
       r.repairTime, r.repairBy, r.imageName
     ].join(" ").toLowerCase();
 
-    return modelOk && (!q || blob.includes(q));
+    return !q || blob.includes(q);
   });
-}
 
+  filtered = [...filtered];
+  const textSort = (a, b, field) => String(a[field] || "").localeCompare(
+    String(b[field] || ""), "th", { sensitivity: "base", numeric: true }
+  );
+
+  if (sortBy === "oldest") {
+    filtered.sort((a,b) => recordTimestampForSort(a) - recordTimestampForSort(b));
+  } else if (sortBy === "repairTimeDesc") {
+    filtered.sort((a,b) => Number(b.repairTime || 0) - Number(a.repairTime || 0));
+  } else if (sortBy === "repairTimeAsc") {
+    filtered.sort((a,b) => Number(a.repairTime || 0) - Number(b.repairTime || 0));
+  } else if (sortBy === "failureAZ") {
+    filtered.sort((a,b) => textSort(a,b,"failure"));
+  } else if (sortBy === "modelAZ") {
+    filtered.sort((a,b) => textSort(a,b,"model"));
+  } else if (sortBy === "stationAZ") {
+    filtered.sort((a,b) => textSort(a,b,"station"));
+  } else {
+    filtered.sort((a,b) => recordTimestampForSort(b) - recordTimestampForSort(a));
+  }
+
+  return filtered;
+}
 
 function renderHistory() {
   const filtered = getCurrentHistoryFilteredRecords();
+  const pageSize = Number($("#historyPageSize").value || 50);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  historyCurrentPage = Math.min(Math.max(1, historyCurrentPage), totalPages);
 
+  const startIndex = (historyCurrentPage - 1) * pageSize;
+  const pageRecords = filtered.slice(startIndex, startIndex + pageSize);
   const body = $("#historyBody");
 
-  if (!filtered.length) {
-    body.innerHTML =
-      '<tr><td colspan="10" class="empty">ไม่พบข้อมูล</td></tr>';
+  if (!pageRecords.length) {
+    body.innerHTML = '<tr><td colspan="10" class="empty">ไม่พบข้อมูล</td></tr>';
   } else {
-    body.innerHTML = filtered.map(r => {
+    body.innerHTML = pageRecords.map(r => {
       const image = resolveRecordImage(r);
-
       const imageCell = image.thumbnailUrl
-        ? `<img class="history-thumb"
-              src="${escAttr(image.thumbnailUrl)}"
-              alt="${escAttr(image.name || "Repair image")}"
-              loading="lazy"
-              referrerpolicy="no-referrer"
-              data-url="${escAttr(image.thumbnailUrl)}"
-              data-name="${escAttr(image.name)}"
-              data-fileid="${escAttr(image.fileId)}">`
+        ? `<img class="history-thumb" src="${escAttr(image.thumbnailUrl)}" alt="${escAttr(image.name || "Repair image")}" loading="lazy" referrerpolicy="no-referrer" data-url="${escAttr(image.thumbnailUrl)}" data-name="${escAttr(image.name)}" data-fileid="${escAttr(image.fileId)}">`
         : '<span class="no-image">ไม่มีรูป</span>';
 
-      return `
-        <tr>
-          <td data-label="Failure / Symptom" class="history-failure-cell">
-            <button
-              type="button"
-              class="failure-detail-trigger failure-text-button"
-              data-failure="${escAttr(r.failure)}"
-              title="ดูจำนวนครั้งและวิธีแก้ไขแบบละเอียด"
-            >${esc(r.failure)}</button>
-          </td>
-          <td data-label="Repair Action" class="history-action-cell">${esc(r.repairAction)}</td>
-          <td data-label="รูป" class="history-image-cell">${imageCell}</td>
-          <td data-label="Model">${esc(r.model)}</td>
-          <td data-label="Station">${esc(r.station)}</td>
-          <td data-label="เริ่มซ่อม">${esc(r.startRepair)}</td>
-          <td data-label="ซ่อมเสร็จ">${esc(r.finishRepair)}</td>
-          <td data-label="Repair Time (นาที)">${esc(r.repairTime)}</td>
-          <td data-label="คนทำ">${esc(r.repairBy)}</td>
-          <td data-label="Repair ID" class="history-id-cell"><strong>${esc(r.repairId)}</strong></td>
-        </tr>
-      `;
+      return `<tr>
+        <td data-label="Failure / Symptom" class="history-failure-cell"><button type="button" class="failure-detail-trigger failure-text-button" data-failure="${escAttr(r.failure)}" title="ดูจำนวนครั้งและวิธีแก้ไขแบบละเอียด">${esc(r.failure)}</button></td>
+        <td data-label="Repair Action" class="history-action-cell">${esc(r.repairAction)}</td>
+        <td data-label="รูป" class="history-image-cell">${imageCell}</td>
+        <td data-label="Model">${esc(r.model)}</td>
+        <td data-label="Station">${esc(r.station)}</td>
+        <td data-label="เริ่มซ่อม">${esc(r.startRepair)}</td>
+        <td data-label="ซ่อมเสร็จ">${esc(r.finishRepair)}</td>
+        <td data-label="Repair Time (นาที)">${esc(r.repairTime)}</td>
+        <td data-label="คนทำ">${esc(r.repairBy)}</td>
+        <td data-label="Repair ID" class="history-id-cell"><strong>${esc(r.repairId)}</strong></td>
+      </tr>`;
     }).join("");
 
     document.querySelectorAll(".history-thumb").forEach(img => {
-      img.addEventListener("click", () => {
-        openImageModal(img.dataset.url, img.dataset.name, img.dataset.fileid);
-      });
-
-      img.addEventListener("error", () => {
-        loadHistoryImageFallback(img);
-      }, { once: true });
+      img.addEventListener("click", () => openImageModal(img.dataset.url, img.dataset.name, img.dataset.fileid));
+      img.addEventListener("error", () => loadHistoryImageFallback(img), { once: true });
     });
   }
 
-  $("#recordCount").textContent = `${filtered.length} รายการ`;
+  const endIndex = Math.min(startIndex + pageRecords.length, filtered.length);
+  $("#recordCount").textContent = filtered.length
+    ? `${startIndex + 1}-${endIndex} / ${filtered.length} รายการ`
+    : "0 รายการ";
+  $("#historyPageInfo").textContent = `Page ${historyCurrentPage} / ${totalPages}`;
+  $("#historyPrevBtn").disabled = historyCurrentPage <= 1;
+  $("#historyNextBtn").disabled = historyCurrentPage >= totalPages;
 }
-
 
 
 /* =========================
@@ -978,6 +1052,10 @@ function bindDashboard() {
 
 function xmlExcelEscape(value) {
   return String(value ?? "")
+    .replace(
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,
+      ""
+    )
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -1163,12 +1241,28 @@ function downloadExcelWorkbook(filename, worksheets) {
 
 
 function currentHistoryExportContext() {
+  const sortLabels = {
+    newest: "ใหม่สุดก่อน",
+    oldest: "เก่าสุดก่อน",
+    repairTimeDesc: "Repair Time มาก → น้อย",
+    repairTimeAsc: "Repair Time น้อย → มาก",
+    failureAZ: "Failure A → Z",
+    modelAZ: "Model A → Z",
+    stationAZ: "Station A → Z"
+  };
+
+  const sortBy = $("#historySortBy").value || "newest";
+
   return {
     search: $("#searchBox").value.trim(),
-    model: $("#filterModel").value || "ALL"
+    model: $("#filterModel").value || "ALL",
+    station: $("#filterStation").value || "ALL",
+    dateFrom: $("#filterDateFrom").value || "ALL",
+    dateTo: $("#filterDateTo").value || "ALL",
+    sortBy,
+    sortLabel: sortLabels[sortBy] || sortBy
   };
 }
-
 
 async function exportCurrentHistoryExcel() {
   const records =
@@ -1176,7 +1270,7 @@ async function exportCurrentHistoryExcel() {
 
   if (!records.length) {
     toast(
-      "ไม่มีข้อมูล History ตาม Search / Model Filter ปัจจุบัน",
+      "ไม่มีข้อมูล History ตาม Filter ปัจจุบัน",
       "error"
     );
     return;
@@ -1262,6 +1356,16 @@ async function exportCurrentHistoryExcel() {
           : context.model
       );
 
+    const stationPart =
+      context.station === "ALL"
+        ? "ALL_STATION"
+        : sanitizeExportFilePart(context.station);
+
+    const datePart =
+      context.dateFrom === "ALL" && context.dateTo === "ALL"
+        ? ""
+        : `_DATE_${sanitizeExportFilePart(context.dateFrom)}_${sanitizeExportFilePart(context.dateTo)}`;
+
     const searchPart =
       context.search
         ? "_SEARCH_" +
@@ -1271,7 +1375,7 @@ async function exportCurrentHistoryExcel() {
         : "";
 
     downloadBinaryFile(
-      `Repair_History_${modelPart}${searchPart}_${exportTimestamp()}.xlsx`,
+      `Repair_History_${modelPart}_${stationPart}${datePart}${searchPart}_${exportTimestamp()}.xlsx`,
       zipBytes,
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
@@ -1351,44 +1455,20 @@ async function exportFailureGuidesExcel() {
     const imageRecords = [];
     const imageSlots = new Set();
 
-    for (
-      let index = 0;
-      index < guides.length;
-      index++
-    ) {
+    for (let index = 0; index < guides.length; index++) {
       const guide = guides[index];
+      const loadedImages = await loadGuideImagesForXlsx(guide);
 
-      if (
-        !guide.imageFileId &&
-        !guide.imageUrl
-      ) {
-        continue;
-      }
-
-      try {
-        const loaded =
-          await loadGuideImageForXlsx(
-            guide
-          );
-
-        if (!loaded) continue;
-
+      loadedImages.slice(0, 5).forEach((loaded, imageIndex) => {
         imageSlots.add(index);
 
         imageRecords.push({
           ...loaded,
           guideIndex: index,
           sheetRow: 5 + index,
-          imageColumn: 7
+          imageColumn: 14 + imageIndex
         });
-
-      } catch (err) {
-        console.warn(
-          "Skip Guide image in XLSX:",
-          guide.guideId,
-          err
-        );
-      }
+      });
     }
 
     const sheetXml =
@@ -1510,6 +1590,7 @@ function renderDashboard() {
   renderDashboardKpis(filtered);
   renderTopFailures(filtered);
   renderTimeline(filtered);
+  renderDashboardBreakdowns(filtered);
 }
 
 function getDashboardFilteredRecords() {
@@ -1556,41 +1637,45 @@ function getDashboardFilteredRecords() {
   });
 }
 
+function renderBreakdownChart(containerSelector, records, field) {
+  const container = $(containerSelector);
+  if (!container) return;
+  const map = new Map();
+  records.forEach(r => {
+    const key = String(r[field] || "").trim() || "(ไม่ระบุ)";
+    map.set(key, (map.get(key) || 0) + 1);
+  });
+  const items = Array.from(map.entries()).map(([name,count]) => ({name,count}))
+    .sort((a,b) => b.count - a.count || a.name.localeCompare(b.name)).slice(0,12);
+  if (!items.length) {
+    container.innerHTML = '<div class="dashboard-empty">ยังไม่มีข้อมูล</div>';
+    return;
+  }
+  const max = Math.max(...items.map(i => i.count),1);
+  container.innerHTML = items.map(i => `<div class="breakdown-row"><span class="breakdown-name">${esc(i.name)}</span><div class="breakdown-track"><div class="breakdown-fill" style="width:${((i.count/max)*100).toFixed(2)}%"></div></div><span class="breakdown-count">${i.count}</span></div>`).join("");
+}
+
+function renderDashboardBreakdowns(records) {
+  renderBreakdownChart("#modelBreakdownChart", records, "model");
+  renderBreakdownChart("#stationBreakdownChart", records, "station");
+}
+
 function renderDashboardKpis(records) {
-  const repairTimes = records
-    .map(r => Number(r.repairTime))
-    .filter(v => Number.isFinite(v) && v >= 0);
+  const kpis = getDashboardKpiData(records);
 
-  const avg = repairTimes.length
-    ? repairTimes.reduce((a, b) => a + b, 0) / repairTimes.length
-    : 0;
-
-  const models = new Set(
-    records.map(r => String(r.model || "").trim()).filter(Boolean)
-  );
-
-  const stations = new Set(
-    records.map(r => String(r.station || "").trim()).filter(Boolean)
-  );
-
-  $("#kpiTotalRecords").textContent = records.length;
-  $("#kpiAvgRepairTime").textContent = Math.round(avg);
-  $("#kpiModels").textContent = models.size;
-  $("#kpiStations").textContent = stations.size;
+  $("#kpiTotalRecords").textContent = kpis.totalRecords;
+  $("#kpiAvgRepairTime").textContent = kpis.averageRepairTime;
+  $("#kpiModels").textContent = kpis.modelCount;
+  $("#kpiStations").textContent = kpis.stationCount;
 }
 
 function renderTopFailures(records) {
-  const requestedLimit = Number($("#topFailureCount").value || 5);
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.min(99, Math.max(0, Math.trunc(requestedLimit)))
-    : 5;
+  const {
+    limit,
+    total,
+    groups
+  } = getDashboardTopFailureData(records);
 
-  const allGroups = aggregateFailures(records)
-    .sort((a, b) => b.count - a.count || a.failure.localeCompare(b.failure));
-
-  const groups = limit === 0 ? [] : allGroups.slice(0, limit);
-
-  const total = records.length;
   const chart = $("#topFailureChart");
   const ranking = $("#failureRankingBody");
 
@@ -1711,78 +1796,45 @@ function normalizeFailure(value) {
 }
 
 function renderTimeline(records) {
-  const type = $("#dashboardPeriodType").value;
   const chart = $("#timelineChart");
 
-  const groups = new Map();
+  const {
+    subtitle,
+    values
+  } = getDashboardTimelineData(records);
 
-  records.forEach(r => {
-    const date = parseRepairDate(r.date);
-    if (!date) return;
-
-    let key;
-    let label;
-
-    if (type === "day") {
-      const hour = parseRecordHour(r.time);
-      if (hour === null) return;
-
-      key = String(hour).padStart(2, "0");
-      label = `${String(hour).padStart(2, "0")}:00`;
-    } else if (type === "week") {
-      key = toDateInputValue(date);
-      label = formatShortDate(date);
-    } else if (type === "month") {
-      key = toDateInputValue(date);
-      label = formatShortDate(date);
-    } else if (type === "year") {
-      key = toMonthInputValue(date);
-      label = formatMonthLabel(date);
-    } else {
-      key = toMonthInputValue(date);
-      label = formatMonthYearLabel(date);
-    }
-
-    groups.set(key, {
-      label,
-      count: (groups.get(key)?.count || 0) + 1
-    });
-  });
-
-  let values = Array.from(groups.entries())
-    .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([, v]) => v);
-
-  if (type === "day") {
-    values = buildHourlyTimeline(groups);
-    $("#timelineSubtitle").textContent = "จำนวน Repair Records แยกตามชั่วโมง";
-  } else if (type === "week") {
-    $("#timelineSubtitle").textContent = "จำนวน Repair Records แยกตามวันในสัปดาห์";
-  } else if (type === "month") {
-    $("#timelineSubtitle").textContent = "จำนวน Repair Records แยกตามวันในเดือน";
-  } else if (type === "year") {
-    values = buildYearlyMonthTimeline(groups);
-    $("#timelineSubtitle").textContent = "จำนวน Repair Records แยกตามเดือนของปีที่เลือก";
-  } else {
-    $("#timelineSubtitle").textContent = "จำนวน Repair Records ทั้งหมด แยกตามเดือน";
-  }
+  $("#timelineSubtitle").textContent = subtitle;
 
   if (!values.length || !values.some(v => v.count > 0)) {
-    chart.innerHTML = '<div class="dashboard-empty">ยังไม่มีข้อมูลในช่วงที่เลือก</div>';
+    chart.innerHTML =
+      '<div class="dashboard-empty">ยังไม่มีข้อมูลในช่วงที่เลือก</div>';
     return;
   }
 
-  const maxCount = Math.max(...values.map(v => v.count), 1);
+  const maxCount = Math.max(
+    ...values.map(v => v.count),
+    1
+  );
 
   chart.innerHTML = `
     <div class="timeline-bars">
       ${values.map(v => {
-        const height = Math.max(4, (v.count / maxCount) * 100);
+        const height = Math.max(
+          4,
+          (v.count / maxCount) * 100
+        );
+
         return `
-          <div class="timeline-item" title="${escAttr(v.label)} : ${v.count}">
+          <div
+            class="timeline-item"
+            title="${escAttr(v.label)} : ${v.count}"
+          >
             <div class="timeline-value">${v.count || ""}</div>
             <div class="timeline-column">
-              <div class="timeline-fill" style="height:${height}%"></div>
+              <div
+                class="timeline-fill"
+                style="height:${height}%"
+              ></div>
             </div>
             <div class="timeline-label">${esc(v.label)}</div>
           </div>
@@ -1956,34 +2008,23 @@ function bindFailureGuide() {
   $("#closeFailureDetailModal").addEventListener("click", closeFailureDetailModal);
   $("#failureDetailBackdrop").addEventListener("click", closeFailureDetailModal);
 
-  document.addEventListener("click", (event) => {
+  document.addEventListener("click", event => {
     const trigger = event.target.closest(".failure-detail-trigger");
     if (!trigger) return;
-
     const failure = String(trigger.dataset.failure || "").trim();
-    if (!failure) return;
-
-    openFailureDetailModal(failure);
+    if (failure) openFailureDetailModal(failure);
   });
 
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      closeFailureDetailModal();
-    }
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeFailureDetailModal();
   });
 
-  $("#exportCurrentFailureExcelBtn").addEventListener(
-    "click",
-    exportCurrentFailureDetailXlsx
-  );
+  $("#exportCurrentFailureExcelBtn").addEventListener("click", exportCurrentFailureDetailXlsx);
 
   $("#toggleFailureGuideFormBtn").addEventListener("click", () => {
     const form = $("#failureGuideAddForm");
     form.classList.toggle("hidden");
-
-    if (!form.classList.contains("hidden")) {
-      $("#failureGuideDetailInput").focus();
-    }
+    if (!form.classList.contains("hidden")) $("#failureGuideDetailInput").focus();
   });
 
   $("#cancelFailureGuideBtn").addEventListener("click", () => {
@@ -1991,73 +2032,78 @@ function bindFailureGuide() {
     $("#failureGuideAddForm").classList.add("hidden");
   });
 
-  $("#failureGuideImageInput").addEventListener("change", async (event) => {
-    const file = event.target.files && event.target.files[0];
-
-    if (!file) {
-      clearFailureGuideSelectedImage();
-      return;
-    }
-
-    if (!file.type.startsWith("image/")) {
-      toast("กรุณาเลือกไฟล์รูปภาพ", "error");
-      clearFailureGuideSelectedImage();
-      return;
-    }
+  $("#failureGuideImageInput").addEventListener("change", async event => {
+    const files = Array.from(event.target.files || []).slice(0,5);
+    selectedFailureGuideImages = [];
+    selectedFailureGuideImage = null;
+    if (!files.length) { clearFailureGuideSelectedImage(); return; }
 
     try {
-      selectedFailureGuideImage = await compressImage(file);
-      $("#failureGuideImagePreview").src = selectedFailureGuideImage.dataUrl;
-      $("#failureGuideImagePreviewWrap").classList.remove("hidden");
+      toast("กำลังเตรียมรูป...", "");
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) continue;
+        selectedFailureGuideImages.push(await compressImage(file));
+      }
+      if (!selectedFailureGuideImages.length) throw new Error("ไม่พบไฟล์รูปที่รองรับ");
+      const totalBase64 = selectedFailureGuideImages.reduce((sum,img)=>sum+img.base64.length,0);
+      if (totalBase64 > 3800000) throw new Error("รูปหลายรูปรวมกันใหญ่เกินไป กรุณาเลือกรูปน้อยลง");
+      selectedFailureGuideImage = selectedFailureGuideImages[0];
+      const wrap = $("#failureGuideImagePreviewWrap");
+      wrap.classList.remove("hidden");
+      wrap.innerHTML = `<div class="failure-guide-images">${selectedFailureGuideImages.map(img=>`<img src="${escAttr(img.dataUrl)}" alt="${escAttr(img.name)}">`).join("")}</div><button id="failureGuideRemoveImageBtn" class="btn ghost small" type="button">เอารูปออกทั้งหมด</button>`;
+      $("#failureGuideRemoveImageBtn").addEventListener("click", clearFailureGuideSelectedImage);
+      toast(`รูปพร้อมบันทึก ${selectedFailureGuideImages.length} รูป`,"success");
     } catch (err) {
       console.error(err);
       clearFailureGuideSelectedImage();
-      toast("เตรียมรูปไม่สำเร็จ", "error");
+      toast(err.message || "เตรียมรูปไม่สำเร็จ","error");
     }
   });
 
-  $("#failureGuideRemoveImageBtn").addEventListener(
-    "click",
-    clearFailureGuideSelectedImage
-  );
-
+  $("#failureGuideRemoveImageBtn").addEventListener("click", clearFailureGuideSelectedImage);
   $("#failureGuideAddForm").addEventListener("submit", saveFailureGuide);
 
-  // Admin Failure Guide
   $("#adminGuideSearchBox").addEventListener("input", renderAdminFailureGuides);
   $("#adminGuideReloadBtn").addEventListener("click", loadAdminFailureGuides);
   $("#adminGuideClearEditBtn").addEventListener("click", clearAdminGuideEditor);
   $("#adminGuideEditForm").addEventListener("submit", saveAdminFailureGuideEdit);
 
-  $("#adminGuideNewImage").addEventListener("change", async (event) => {
-    const file = event.target.files && event.target.files[0];
-
-    if (!file) {
-      clearAdminGuideNewImage();
-      return;
-    }
-
-    if (!file.type.startsWith("image/")) {
-      toast("กรุณาเลือกไฟล์รูปภาพ", "error");
-      clearAdminGuideNewImage();
-      return;
-    }
-
+  $("#adminGuideNewImage").addEventListener("change", async event => {
+    const files = Array.from(event.target.files || []).slice(0,5);
+    adminGuideNewImages = [];
+    adminGuideNewImage = null;
+    if (!files.length) { clearAdminGuideNewImage(); return; }
     try {
-      adminGuideNewImage = await compressImage(file);
-      $("#adminGuideNewImagePreview").src = adminGuideNewImage.dataUrl;
-      $("#adminGuideNewImagePreviewWrap").classList.remove("hidden");
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) continue;
+        adminGuideNewImages.push(await compressImage(file));
+      }
+      if (!adminGuideNewImages.length) throw new Error("ไม่พบรูปที่รองรับ");
+
+      const totalBase64 = adminGuideNewImages.reduce(
+        (sum, image) => sum + image.base64.length,
+        0
+      );
+
+      if (totalBase64 > 3_800_000) {
+        throw new Error(
+          "รูปหลายรูปรวมกันใหญ่เกินไป กรุณาเลือกรูปน้อยลง"
+        );
+      }
+
+      adminGuideNewImage = adminGuideNewImages[0];
+      const wrap = $("#adminGuideNewImagePreviewWrap");
+      wrap.classList.remove("hidden");
+      wrap.innerHTML = `<div class="failure-guide-images">${adminGuideNewImages.map(img=>`<img src="${escAttr(img.dataUrl)}" alt="${escAttr(img.name)}">`).join("")}</div><button id="adminGuideClearNewImageBtn" class="btn ghost small" type="button">เอารูปใหม่ออกทั้งหมด</button>`;
+      $("#adminGuideClearNewImageBtn").addEventListener("click", clearAdminGuideNewImage);
     } catch (err) {
       console.error(err);
       clearAdminGuideNewImage();
-      toast("เตรียมรูปใหม่ไม่สำเร็จ", "error");
+      toast(err.message || "เตรียมรูปใหม่ไม่สำเร็จ","error");
     }
   });
 
-  $("#adminGuideClearNewImageBtn").addEventListener(
-    "click",
-    clearAdminGuideNewImage
-  );
+  $("#adminGuideClearNewImageBtn").addEventListener("click", clearAdminGuideNewImage);
 }
 
 
@@ -2108,6 +2154,7 @@ async function openFailureDetailModal(failureValue) {
     renderFailureGuides(
       currentFailureGuides
     );
+    renderFailureAnalytics(res.analytics || {});
 
   } catch (err) {
     console.error(err);
@@ -2142,100 +2189,107 @@ function countFailureOccurrences(failureValue) {
 }
 
 
+function renderMiniBreakdown(containerSelector, items) {
+  const container = $(containerSelector);
+  if (!container) return;
+  const list = Array.isArray(items) ? items.slice(0,8) : [];
+  if (!list.length) { container.innerHTML = '<span class="muted">ยังไม่มีข้อมูล</span>'; return; }
+  const max = Math.max(...list.map(i=>Number(i.count||0)),1);
+  container.innerHTML = list.map(i=>`<div class="breakdown-row"><span class="breakdown-name">${esc(i.name||"-")}</span><div class="breakdown-track"><div class="breakdown-fill" style="width:${((Number(i.count||0)/max)*100).toFixed(2)}%"></div></div><span class="breakdown-count">${Number(i.count||0)}</span></div>`).join("");
+}
+
+function renderFailureAnalytics(analytics) {
+  const data = analytics || {};
+  $("#failureAvgRepairTime").textContent = `${Math.round(Number(data.avgRepairTime||0))} min`;
+  $("#failureLastSeen").textContent = data.lastSeen || "-";
+  const models = Array.isArray(data.modelBreakdown) ? data.modelBreakdown : [];
+  const stations = Array.isArray(data.stationBreakdown) ? data.stationBreakdown : [];
+  $("#failureTopModel").textContent = models[0] ? `${models[0].name} (${models[0].count})` : "-";
+  $("#failureTopStation").textContent = stations[0] ? `${stations[0].name} (${stations[0].count})` : "-";
+  renderMiniBreakdown("#failureModelBreakdown",models);
+  renderMiniBreakdown("#failureStationBreakdown",stations);
+  const recent = Array.isArray(data.recent) ? data.recent : [];
+  $("#failureRecentOccurrences").innerHTML = recent.length ? recent.map(i=>`<div class="failure-recent-item"><span>${esc(i.date||"")} ${esc(i.time||"")}</span><strong>${esc(i.model||"-")} · ${esc(i.station||"-")}</strong><span>${esc(i.repairTime||"0")} min</span></div>`).join("") : '<span class="muted">ยังไม่มีข้อมูล</span>';
+}
+
+function structuredGuideRows(guide) {
+  return [
+    ["Root Cause",guide.rootCause],
+    ["Check Point",guide.checkPoint],
+    ["Expected Value / Spec",guide.expectedValue],
+    ["Verification",guide.verification],
+    ["Tool / Equipment",guide.toolEquipment],
+    ["Related Model",guide.relatedModel],
+    ["Related Station",guide.relatedStation]
+  ].filter(([,value])=>String(value||"").trim());
+}
+
 function renderFailureGuides(guides) {
-  currentFailureGuides = Array.isArray(guides)
-    ? guides
-    : [];
-
-  $("#failureGuideCount").textContent =
-    `${currentFailureGuides.length} วิธีแก้`;
-
-  guides = currentFailureGuides;
-
+  currentFailureGuides = Array.isArray(guides) ? guides : [];
+  $("#failureGuideCount").textContent = `${currentFailureGuides.length} วิธีแก้`;
   const list = $("#failureGuideList");
 
-  if (!guides.length) {
-    list.innerHTML = `
-      <div class="failure-guide-empty">
-        <strong>ยังไม่มีวิธีแก้ไขแบบละเอียด</strong>
-        <span>กด “+ เพิ่มวิธีแก้ไขแบบละเอียด” เพื่อเพิ่ม Knowledge แรก</span>
-      </div>
-    `;
+  if (!currentFailureGuides.length) {
+    list.innerHTML = `<div class="failure-guide-empty"><strong>ยังไม่มีวิธีแก้ไขแบบละเอียด</strong><span>กด “+ เพิ่มวิธีแก้ไขแบบละเอียด” เพื่อเพิ่ม Knowledge แรก</span></div>`;
     return;
   }
 
-  list.innerHTML = guides.map((guide, index) => {
-    const image = resolveGuideImage(guide);
+  list.innerHTML = currentFailureGuides.map((guide,index)=>{
+    const structured = structuredGuideRows(guide);
+    const structuredHtml = structured.length ? `<div class="guide-structured">${structured.map(([label,value])=>`<div class="guide-structured-row"><strong>${esc(label)}</strong><span>${esc(value)}</span></div>`).join("")}</div>` : "";
 
-    const imageHtml = image.thumbnailUrl
-      ? `
-        <img
-          class="failure-guide-image"
-          src="${escAttr(image.thumbnailUrl)}"
-          alt="${escAttr(image.name || "Failure guide image")}"
-          loading="lazy"
-          referrerpolicy="no-referrer"
-          data-url="${escAttr(image.thumbnailUrl)}"
-          data-fileid="${escAttr(image.fileId)}"
-          data-name="${escAttr(image.name)}"
-        >
-      `
-      : "";
+    const images = Array.isArray(guide.images) && guide.images.length
+      ? guide.images
+      : [resolveGuideImage(guide)].filter(img=>img.thumbnailUrl);
 
-    const author = String(guide.author || "").trim();
-    const created = [
-      String(guide.date || "").trim(),
-      String(guide.time || "").trim()
-    ].filter(Boolean).join(" ");
+    const imagesHtml = images.length ? `<div class="failure-guide-images">${images.map(image=>{
+      const fileId = normalizeDriveFileId(image.fileId || image.imageFileId) || extractDriveFileId(image.url || image.imageUrl || "");
+      const url = fileId ? buildDriveThumbnailUrl(fileId) : String(image.thumbnailUrl || image.url || image.imageUrl || "");
+      const name = String(image.name || image.imageName || "Failure guide image");
+      return `<img class="failure-guide-image" src="${escAttr(url)}" alt="${escAttr(name)}" loading="lazy" referrerpolicy="no-referrer" data-url="${escAttr(url)}" data-fileid="${escAttr(fileId)}" data-name="${escAttr(name)}">`;
+    }).join("")}</div>` : "";
 
-    return `
-      <article class="failure-guide-item">
-        <div class="failure-guide-item-head">
-          <span class="failure-guide-number">วิธีที่ ${index + 1}</span>
-          <span class="failure-guide-id">${esc(guide.guideId || "")}</span>
-        </div>
-
-        <div class="failure-guide-detail-text">${esc(guide.detail || "")}</div>
-
-        ${imageHtml}
-
-        <div class="failure-guide-meta">
-          ${author ? `<span>ผู้เพิ่ม: <strong>${esc(author)}</strong></span>` : ""}
-          ${created ? `<span>บันทึก: ${esc(created)}</span>` : ""}
-        </div>
-      </article>
-    `;
+    const author = String(guide.author||"").trim();
+    const created = [String(guide.date||"").trim(),String(guide.time||"").trim()].filter(Boolean).join(" ");
+    return `<article class="failure-guide-item"><div class="failure-guide-item-head"><span class="failure-guide-number">วิธีที่ ${index+1}</span><span class="failure-guide-id">${esc(guide.guideId||"")}</span></div><div class="failure-guide-detail-text">${esc(guide.detail||"")}</div>${structuredHtml}${imagesHtml}<div class="failure-guide-meta">${author?`<span>ผู้เพิ่ม: <strong>${esc(author)}</strong></span>`:""}${created?`<span>บันทึก: ${esc(created)}</span>`:""}</div></article>`;
   }).join("");
 
-  list.querySelectorAll(".failure-guide-image").forEach(img => {
-    img.addEventListener("click", () => {
-      openImageModal(
-        img.dataset.url,
-        img.dataset.name,
-        img.dataset.fileid
-      );
-    });
-
-    img.addEventListener("error", async () => {
-      const id = normalizeDriveFileId(img.dataset.fileid);
-      if (!id) return;
-
-      try {
-        img.src = await getDriveImageData(id);
-      } catch (err) {
-        console.error(err);
-        img.style.display = "none";
-      }
-    }, { once: true });
+  list.querySelectorAll(".failure-guide-image").forEach(img=>{
+    img.addEventListener("click",()=>openImageModal(img.dataset.url,img.dataset.name,img.dataset.fileid));
+    img.addEventListener("error",async()=>{
+      const id=normalizeDriveFileId(img.dataset.fileid); if(!id)return;
+      try{img.src=await getDriveImageData(id);}catch(err){console.error(err);img.style.display="none";}
+    },{once:true});
   });
 }
 
-
 function resolveGuideImage(guide) {
-  const rawUrl = String(guide?.imageUrl || "").trim();
+  const gallery = Array.isArray(guide?.images)
+    ? guide.images
+    : [];
+
+  const first = gallery.find(image =>
+    image && (
+      image.imageFileId ||
+      image.fileId ||
+      image.imageUrl ||
+      image.url
+    )
+  );
+
+  const rawUrl = String(
+    first?.imageUrl ||
+    first?.url ||
+    guide?.imageUrl ||
+    ""
+  ).trim();
 
   const fileId =
-    normalizeDriveFileId(guide?.imageFileId) ||
+    normalizeDriveFileId(
+      first?.imageFileId ||
+      first?.fileId ||
+      guide?.imageFileId
+    ) ||
     extractDriveFileId(rawUrl);
 
   return {
@@ -2243,19 +2297,26 @@ function resolveGuideImage(guide) {
     thumbnailUrl: fileId
       ? buildDriveThumbnailUrl(fileId)
       : rawUrl,
-    name: String(guide?.imageName || "").trim()
+    name: String(
+      first?.imageName ||
+      first?.name ||
+      guide?.imageName ||
+      ""
+    ).trim()
   };
 }
 
-
 function clearFailureGuideSelectedImage() {
   selectedFailureGuideImage = null;
-
+  selectedFailureGuideImages = [];
   const input = $("#failureGuideImageInput");
   if (input) input.value = "";
-
-  $("#failureGuideImagePreview").removeAttribute("src");
-  $("#failureGuideImagePreviewWrap").classList.add("hidden");
+  const wrap = $("#failureGuideImagePreviewWrap");
+  if (wrap) {
+    wrap.classList.add("hidden");
+    wrap.innerHTML = `<img id="failureGuideImagePreview" alt="Failure guide preview" /><button id="failureGuideRemoveImageBtn" class="btn ghost small" type="button">เอารูปออก</button>`;
+    $("#failureGuideRemoveImageBtn").addEventListener("click",clearFailureGuideSelectedImage);
+  }
 }
 
 
@@ -2297,15 +2358,17 @@ async function saveFailureGuide(event) {
       failure,
       detail,
       author,
-      imageName: selectedFailureGuideImage
-        ? selectedFailureGuideImage.name
-        : "",
-      imageMimeType: selectedFailureGuideImage
-        ? selectedFailureGuideImage.mimeType
-        : "",
-      imageBase64: selectedFailureGuideImage
-        ? selectedFailureGuideImage.base64
-        : ""
+      rootCause: $("#failureGuideRootCauseInput").value.trim(),
+      checkPoint: $("#failureGuideCheckPointInput").value.trim(),
+      expectedValue: $("#failureGuideExpectedValueInput").value.trim(),
+      verification: $("#failureGuideVerificationInput").value.trim(),
+      toolEquipment: $("#failureGuideToolEquipmentInput").value.trim(),
+      relatedModel: $("#failureGuideRelatedModelInput").value.trim(),
+      relatedStation: $("#failureGuideRelatedStationInput").value.trim(),
+      imagesJson: JSON.stringify(selectedFailureGuideImages.map(image => ({ name:image.name, mimeType:image.mimeType, base64:image.base64 }))),
+      imageName: selectedFailureGuideImage ? selectedFailureGuideImage.name : "",
+      imageMimeType: selectedFailureGuideImage ? selectedFailureGuideImage.mimeType : "",
+      imageBase64: selectedFailureGuideImage ? selectedFailureGuideImage.base64 : ""
     });
 
     resetFailureGuideForm();
@@ -2330,6 +2393,7 @@ async function saveFailureGuide(event) {
 
 
 async function sendFailureGuideOperation(values) {
+  requireOnline();
   const opId = createAdminOpId();
 
   const body = new URLSearchParams({
@@ -2359,8 +2423,21 @@ async function sendFailureGuideOperation(values) {
    - ไม่ใช้ external library / CDN
 ========================= */
 
-function xlsxXmlEscape(value) {
+function xlsxSanitizeXmlText(value) {
+  if (window.ExcelEngineV23) {
+    return window.ExcelEngineV23.sanitizeXmlText(value);
+  }
+
   return String(value ?? "")
+    .replace(
+      /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,
+      ""
+    );
+}
+
+
+function xlsxXmlEscape(value) {
+  return xlsxSanitizeXmlText(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -2447,28 +2524,36 @@ function dataUrlToXlsxImage(dataUrl) {
 }
 
 
-async function loadGuideImageForXlsx(guide) {
-  const image = resolveGuideImage(guide);
+async function loadImageReferenceForXlsx(imageRef, fallbackName) {
+  const rawUrl = String(
+    imageRef?.imageUrl ||
+    imageRef?.url ||
+    imageRef?.thumbnailUrl ||
+    ""
+  ).trim();
 
-  if (image.fileId) {
-    const dataUrl = await getDriveImageData(
-      image.fileId
-    );
+  const fileId =
+    normalizeDriveFileId(
+      imageRef?.imageFileId ||
+      imageRef?.fileId
+    ) ||
+    extractDriveFileId(rawUrl);
+
+  const name = String(
+    imageRef?.imageName ||
+    imageRef?.name ||
+    fallbackName ||
+    "guide-image"
+  ).trim();
+
+  if (fileId) {
+    const dataUrl = await getDriveImageData(fileId);
 
     return {
       ...dataUrlToXlsxImage(dataUrl),
-      name:
-        image.name ||
-        guide.imageName ||
-        "guide-image"
+      name
     };
   }
-
-  const rawUrl = String(
-    guide.imageUrl ||
-    image.thumbnailUrl ||
-    ""
-  ).trim();
 
   if (!rawUrl) return null;
 
@@ -2482,9 +2567,7 @@ async function loadGuideImageForXlsx(guide) {
     );
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}`
-      );
+      throw new Error(`HTTP ${response.status}`);
     }
 
     const blob = await response.blob();
@@ -2494,7 +2577,6 @@ async function loadGuideImageForXlsx(guide) {
     }
 
     const buffer = await blob.arrayBuffer();
-
     let extension = "jpg";
 
     if (blob.type === "image/png") {
@@ -2507,23 +2589,50 @@ async function loadGuideImageForXlsx(guide) {
       bytes: new Uint8Array(buffer),
       mime: blob.type,
       extension,
-      name:
-        image.name ||
-        guide.imageName ||
-        "guide-image"
+      name
     };
 
   } catch (err) {
-    console.warn(
-      "Cannot embed guide image:",
-      err
-    );
-
+    console.warn("Cannot embed guide image:", err);
     return null;
   }
 }
 
 
+async function loadGuideImagesForXlsx(guide) {
+  const gallery = Array.isArray(guide?.images) && guide.images.length
+    ? guide.images.slice(0, 5)
+    : [
+        {
+          imageFileId: guide?.imageFileId,
+          imageUrl: guide?.imageUrl,
+          imageName: guide?.imageName
+        }
+      ];
+
+  const loaded = [];
+
+  for (const imageRef of gallery) {
+    try {
+      const image = await loadImageReferenceForXlsx(
+        imageRef,
+        guide?.imageName || "guide-image"
+      );
+
+      if (image) loaded.push(image);
+    } catch (err) {
+      console.warn("Skip guide image:", guide?.guideId, err);
+    }
+  }
+
+  return loaded.slice(0, 5);
+}
+
+
+async function loadGuideImageForXlsx(guide) {
+  const images = await loadGuideImagesForXlsx(guide);
+  return images[0] || null;
+}
 
 async function loadRecordImageForXlsx(record) {
   const image = resolveRecordImage(record);
@@ -2802,6 +2911,16 @@ function xlsxBuildHistorySheetXml(
         context.model,
         3
       ) +
+      xlsxInlineStringCell(
+        "G2",
+        "Station Filter",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "H2",
+        context.station,
+        3
+      ) +
     `</row>`
   );
 
@@ -2814,7 +2933,7 @@ function xlsxBuildHistorySheetXml(
       ) +
       xlsxInlineStringCell(
         "B3",
-        "ใหม่สุดก่อน · ไม่มี Model Sort",
+        context.sortLabel,
         3
       ) +
       xlsxInlineStringCell(
@@ -2826,6 +2945,16 @@ function xlsxBuildHistorySheetXml(
         "E3",
         records.length,
         5
+      ) +
+      xlsxInlineStringCell(
+        "G3",
+        "Date Range",
+        1
+      ) +
+      xlsxInlineStringCell(
+        "H3",
+        `${context.dateFrom} → ${context.dateTo}`,
+        3
       ) +
     `</row>`
   );
@@ -2980,47 +3109,40 @@ function xlsxBuildAllGuidesSheetXml(
 
   rows.push(
     `<row r="2">` +
-      xlsxInlineStringCell(
-        "A2",
-        "Total Guides",
-        1
-      ) +
-      xlsxNumberCell(
-        "B2",
-        guides.length,
-        5
-      ) +
-      xlsxInlineStringCell(
-        "D2",
-        "Exported At",
-        1
-      ) +
-      xlsxInlineStringCell(
-        "E2",
-        new Date().toLocaleString("th-TH"),
-        3
-      ) +
+      xlsxInlineStringCell("A2", "Total Guides", 1) +
+      xlsxNumberCell("B2", guides.length, 5) +
+      xlsxInlineStringCell("D2", "Exported At", 1) +
+      xlsxInlineStringCell("E2", new Date().toLocaleString("th-TH"), 3) +
     `</row>`
   );
 
   const headerRow = 4;
-
   const headers = [
     "Guide ID",
     "Failure / Symptom",
     "Fail Count",
-    "วิธีแก้ไขแบบละเอียด",
+    "Repair Step / วิธีแก้ไขแบบละเอียด",
+    "Root Cause",
+    "Check Point",
+    "Expected Value / Spec",
+    "Verification",
+    "Tool / Equipment",
+    "Related Model",
+    "Related Station",
     "ผู้เพิ่ม",
     "วันที่",
     "เวลา",
-    "รูป",
-    "Image Name",
+    "รูป 1",
+    "รูป 2",
+    "รูป 3",
+    "รูป 4",
+    "รูป 5",
     "Updated Date",
     "Updated Time"
   ];
 
   rows.push(
-    `<row r="${headerRow}" ht="26" customHeight="1">` +
+    `<row r="${headerRow}" ht="30" customHeight="1">` +
     headers.map((header, index) =>
       xlsxInlineStringCell(
         `${xlsxColumnName(index + 1)}${headerRow}`,
@@ -3034,69 +3156,46 @@ function xlsxBuildAllGuidesSheetXml(
   guides.forEach((guide, index) => {
     const rowNumber = headerRow + 1 + index;
     const hasImage = imageSlots.has(index);
-    const rowHeight = hasImage ? 120 : 60;
+    const rowHeight = hasImage ? 130 : 72;
+    const key = normalizeFailure(guide.failure).toLocaleLowerCase();
+    const imageCount = Math.min(
+      5,
+      Array.isArray(guide.images) && guide.images.length
+        ? guide.images.length
+        : (guide.imageFileId || guide.imageUrl ? 1 : 0)
+    );
 
-    const key = normalizeFailure(
-      guide.failure
-    ).toLocaleLowerCase();
+    const imageCells = [];
+
+    for (let imageIndex = 0; imageIndex < 5; imageIndex++) {
+      imageCells.push(
+        xlsxInlineStringCell(
+          `${xlsxColumnName(15 + imageIndex)}${rowNumber}`,
+          imageIndex === 0 && imageCount === 0 ? "ไม่มีรูป" : "",
+          5
+        )
+      );
+    }
 
     rows.push(
       `<row r="${rowNumber}" ht="${rowHeight}" customHeight="1">` +
-        xlsxInlineStringCell(
-          `A${rowNumber}`,
-          guide.guideId || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `B${rowNumber}`,
-          guide.failure || "",
-          3
-        ) +
-        xlsxNumberCell(
-          `C${rowNumber}`,
-          failCountMap.get(key) || 0,
-          5
-        ) +
-        xlsxInlineStringCell(
-          `D${rowNumber}`,
-          guide.detail || "",
-          6
-        ) +
-        xlsxInlineStringCell(
-          `E${rowNumber}`,
-          guide.author || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `F${rowNumber}`,
-          guide.date || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `G${rowNumber}`,
-          guide.time || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `H${rowNumber}`,
-          hasImage ? "" : "ไม่มีรูป",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `I${rowNumber}`,
-          guide.imageName || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `J${rowNumber}`,
-          guide.updatedDate || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `K${rowNumber}`,
-          guide.updatedTime || "",
-          5
-        ) +
+        xlsxInlineStringCell(`A${rowNumber}`, guide.guideId || "", 3) +
+        xlsxInlineStringCell(`B${rowNumber}`, guide.failure || "", 3) +
+        xlsxNumberCell(`C${rowNumber}`, failCountMap.get(key) || 0, 5) +
+        xlsxInlineStringCell(`D${rowNumber}`, guide.detail || "", 6) +
+        xlsxInlineStringCell(`E${rowNumber}`, guide.rootCause || "", 6) +
+        xlsxInlineStringCell(`F${rowNumber}`, guide.checkPoint || "", 6) +
+        xlsxInlineStringCell(`G${rowNumber}`, guide.expectedValue || "", 6) +
+        xlsxInlineStringCell(`H${rowNumber}`, guide.verification || "", 6) +
+        xlsxInlineStringCell(`I${rowNumber}`, guide.toolEquipment || "", 3) +
+        xlsxInlineStringCell(`J${rowNumber}`, guide.relatedModel || "", 3) +
+        xlsxInlineStringCell(`K${rowNumber}`, guide.relatedStation || "", 3) +
+        xlsxInlineStringCell(`L${rowNumber}`, guide.author || "", 3) +
+        xlsxInlineStringCell(`M${rowNumber}`, guide.date || "", 5) +
+        xlsxInlineStringCell(`N${rowNumber}`, guide.time || "", 5) +
+        imageCells.join("") +
+        xlsxInlineStringCell(`T${rowNumber}`, guide.updatedDate || "", 5) +
+        xlsxInlineStringCell(`U${rowNumber}`, guide.updatedTime || "", 5) +
       `</row>`
     );
   });
@@ -3119,26 +3218,22 @@ function xlsxBuildAllGuidesSheetXml(
     <col min="1" max="1" width="22" customWidth="1"/>
     <col min="2" max="2" width="30" customWidth="1"/>
     <col min="3" max="3" width="12" customWidth="1"/>
-    <col min="4" max="4" width="70" customWidth="1"/>
-    <col min="5" max="5" width="18" customWidth="1"/>
-    <col min="6" max="7" width="14" customWidth="1"/>
-    <col min="8" max="8" width="36" customWidth="1"/>
-    <col min="9" max="9" width="28" customWidth="1"/>
-    <col min="10" max="11" width="16" customWidth="1"/>
+    <col min="4" max="8" width="42" customWidth="1"/>
+    <col min="9" max="11" width="20" customWidth="1"/>
+    <col min="12" max="14" width="16" customWidth="1"/>
+    <col min="15" max="19" width="24" customWidth="1"/>
+    <col min="20" max="21" width="16" customWidth="1"/>
   </cols>
 
-  <sheetData>
-    ${rows.join("")}
-  </sheetData>
+  <sheetData>${rows.join("")}</sheetData>
 
   <mergeCells count="1">
-    <mergeCell ref="A1:K1"/>
+    <mergeCell ref="A1:U1"/>
   </mergeCells>
 
   ${drawingXml}
 </worksheet>`;
 }
-
 
 function xlsxCrc32(bytes) {
   if (!xlsxCrc32.table) {
@@ -3484,67 +3579,52 @@ function xlsxBuildFailureSheetXml(
 
   rows.push(
     `<row r="2">` +
-      xlsxInlineStringCell(
-        "A2",
-        "Failure / Symptom",
-        1
-      ) +
-      xlsxInlineStringCell(
-        "B2",
-        failure,
-        3
-      ) +
+      xlsxInlineStringCell("A2", "Failure / Symptom", 1) +
+      xlsxInlineStringCell("B2", failure, 3) +
     `</row>`
   );
 
   rows.push(
     `<row r="3">` +
-      xlsxInlineStringCell(
-        "A3",
-        "Fail Count",
-        1
-      ) +
-      xlsxNumberCell(
-        "B3",
-        failCount,
-        4
-      ) +
+      xlsxInlineStringCell("A3", "Fail Count", 1) +
+      xlsxNumberCell("B3", failCount, 4) +
     `</row>`
   );
 
   rows.push(
     `<row r="4">` +
-      xlsxInlineStringCell(
-        "A4",
-        "Exported At",
-        1
-      ) +
-      xlsxInlineStringCell(
-        "B4",
-        new Date().toLocaleString("th-TH"),
-        3
-      ) +
+      xlsxInlineStringCell("A4", "Exported At", 1) +
+      xlsxInlineStringCell("B4", new Date().toLocaleString("th-TH"), 3) +
     `</row>`
   );
 
   const headerRow = 6;
-
   const headers = [
     "Guide ID",
     "Failure / Symptom",
     "Fail Count",
-    "วิธีแก้ไขแบบละเอียด",
+    "Repair Step / วิธีแก้ไขแบบละเอียด",
+    "Root Cause",
+    "Check Point",
+    "Expected Value / Spec",
+    "Verification",
+    "Tool / Equipment",
+    "Related Model",
+    "Related Station",
     "ผู้เพิ่ม",
     "วันที่",
     "เวลา",
-    "รูป",
-    "Image Name",
+    "รูป 1",
+    "รูป 2",
+    "รูป 3",
+    "รูป 4",
+    "รูป 5",
     "Updated Date",
     "Updated Time"
   ];
 
   rows.push(
-    `<row r="${headerRow}" ht="26" customHeight="1">` +
+    `<row r="${headerRow}" ht="30" customHeight="1">` +
     headers.map((header, index) =>
       xlsxInlineStringCell(
         `${xlsxColumnName(index + 1)}${headerRow}`,
@@ -3556,72 +3636,46 @@ function xlsxBuildFailureSheetXml(
   );
 
   guides.forEach((guide, index) => {
-    const rowNumber =
-      headerRow + 1 + index;
+    const rowNumber = headerRow + 1 + index;
+    const hasImage = imageSlots.has(index);
+    const rowHeight = hasImage ? 130 : 72;
+    const imageCount = Math.min(
+      5,
+      Array.isArray(guide.images) && guide.images.length
+        ? guide.images.length
+        : (guide.imageFileId || guide.imageUrl ? 1 : 0)
+    );
 
-    const hasImage =
-      imageSlots.has(index);
-
-    const rowHeight =
-      hasImage ? 130 : 64;
+    const imageCells = [];
+    for (let imageIndex = 0; imageIndex < 5; imageIndex++) {
+      imageCells.push(
+        xlsxInlineStringCell(
+          `${xlsxColumnName(15 + imageIndex)}${rowNumber}`,
+          imageIndex === 0 && imageCount === 0 ? "ไม่มีรูป" : "",
+          5
+        )
+      );
+    }
 
     rows.push(
       `<row r="${rowNumber}" ht="${rowHeight}" customHeight="1">` +
-        xlsxInlineStringCell(
-          `A${rowNumber}`,
-          guide.guideId || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `B${rowNumber}`,
-          guide.failure || failure,
-          3
-        ) +
-        xlsxNumberCell(
-          `C${rowNumber}`,
-          failCount,
-          5
-        ) +
-        xlsxInlineStringCell(
-          `D${rowNumber}`,
-          guide.detail || "",
-          6
-        ) +
-        xlsxInlineStringCell(
-          `E${rowNumber}`,
-          guide.author || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `F${rowNumber}`,
-          guide.date || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `G${rowNumber}`,
-          guide.time || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `H${rowNumber}`,
-          hasImage ? "" : "ไม่มีรูป",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `I${rowNumber}`,
-          guide.imageName || "",
-          3
-        ) +
-        xlsxInlineStringCell(
-          `J${rowNumber}`,
-          guide.updatedDate || "",
-          5
-        ) +
-        xlsxInlineStringCell(
-          `K${rowNumber}`,
-          guide.updatedTime || "",
-          5
-        ) +
+        xlsxInlineStringCell(`A${rowNumber}`, guide.guideId || "", 3) +
+        xlsxInlineStringCell(`B${rowNumber}`, guide.failure || failure, 3) +
+        xlsxNumberCell(`C${rowNumber}`, failCount, 5) +
+        xlsxInlineStringCell(`D${rowNumber}`, guide.detail || "", 6) +
+        xlsxInlineStringCell(`E${rowNumber}`, guide.rootCause || "", 6) +
+        xlsxInlineStringCell(`F${rowNumber}`, guide.checkPoint || "", 6) +
+        xlsxInlineStringCell(`G${rowNumber}`, guide.expectedValue || "", 6) +
+        xlsxInlineStringCell(`H${rowNumber}`, guide.verification || "", 6) +
+        xlsxInlineStringCell(`I${rowNumber}`, guide.toolEquipment || "", 3) +
+        xlsxInlineStringCell(`J${rowNumber}`, guide.relatedModel || "", 3) +
+        xlsxInlineStringCell(`K${rowNumber}`, guide.relatedStation || "", 3) +
+        xlsxInlineStringCell(`L${rowNumber}`, guide.author || "", 3) +
+        xlsxInlineStringCell(`M${rowNumber}`, guide.date || "", 5) +
+        xlsxInlineStringCell(`N${rowNumber}`, guide.time || "", 5) +
+        imageCells.join("") +
+        xlsxInlineStringCell(`T${rowNumber}`, guide.updatedDate || "", 5) +
+        xlsxInlineStringCell(`U${rowNumber}`, guide.updatedTime || "", 5) +
       `</row>`
     );
   });
@@ -3653,29 +3707,25 @@ function xlsxBuildFailureSheetXml(
   </sheetViews>
 
   <cols>
-    <col min="1" max="1" width="20" customWidth="1"/>
-    <col min="2" max="2" width="28" customWidth="1"/>
+    <col min="1" max="1" width="22" customWidth="1"/>
+    <col min="2" max="2" width="30" customWidth="1"/>
     <col min="3" max="3" width="12" customWidth="1"/>
-    <col min="4" max="4" width="70" customWidth="1"/>
-    <col min="5" max="5" width="18" customWidth="1"/>
-    <col min="6" max="7" width="14" customWidth="1"/>
-    <col min="8" max="8" width="38" customWidth="1"/>
-    <col min="9" max="9" width="30" customWidth="1"/>
-    <col min="10" max="11" width="16" customWidth="1"/>
+    <col min="4" max="8" width="42" customWidth="1"/>
+    <col min="9" max="11" width="20" customWidth="1"/>
+    <col min="12" max="14" width="16" customWidth="1"/>
+    <col min="15" max="19" width="24" customWidth="1"/>
+    <col min="20" max="21" width="16" customWidth="1"/>
   </cols>
 
-  <sheetData>
-    ${rows.join("")}
-  </sheetData>
+  <sheetData>${rows.join("")}</sheetData>
 
   <mergeCells count="1">
-    <mergeCell ref="A1:K1"/>
+    <mergeCell ref="A1:U1"/>
   </mergeCells>
 
   ${drawingXml}
 </worksheet>`;
 }
-
 
 function xlsxBuildDrawingFiles(
   imageRecords
@@ -3792,37 +3842,21 @@ function downloadBinaryFile(
   bytes,
   mimeType
 ) {
-  const blob = new Blob(
-    [bytes],
-    {
-      type: mimeType
-    }
-  );
+  if (window.ExcelEngineV23) {
+    window.ExcelEngineV23.downloadBinaryFile(filename, bytes, mimeType);
+    return;
+  }
 
-  const url = URL.createObjectURL(
-    blob
-  );
-
-  const link = document.createElement(
-    "a"
-  );
-
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
   link.href = url;
   link.download = filename;
-
-  document.body.appendChild(
-    link
-  );
-
+  document.body.appendChild(link);
   link.click();
   link.remove();
-
-  window.setTimeout(
-    () => URL.revokeObjectURL(url),
-    2000
-  );
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-
 
 async function exportCurrentFailureDetailXlsx() {
   const failure = normalizeFailure(
@@ -3861,43 +3895,20 @@ async function exportCurrentFailureDetailXlsx() {
     const imageRecords = [];
     const imageSlots = new Set();
 
-    for (
-      let index = 0;
-      index < guides.length;
-      index++
-    ) {
+    for (let index = 0; index < guides.length; index++) {
       const guide = guides[index];
+      const loadedImages = await loadGuideImagesForXlsx(guide);
 
-      if (
-        !guide.imageFileId &&
-        !guide.imageUrl
-      ) {
-        continue;
-      }
-
-      try {
-        const loaded =
-          await loadGuideImageForXlsx(
-            guide
-          );
-
-        if (!loaded) continue;
-
+      loadedImages.slice(0, 5).forEach((loaded, imageIndex) => {
         imageSlots.add(index);
 
         imageRecords.push({
           ...loaded,
           guideIndex: index,
-          sheetRow: 7 + index
+          sheetRow: 7 + index,
+          imageColumn: 14 + imageIndex
         });
-
-      } catch (err) {
-        console.warn(
-          "Skip image in XLSX:",
-          guide.guideId,
-          err
-        );
-      }
+      });
     }
 
     const entries =
@@ -4078,6 +4089,13 @@ function selectAdminFailureGuide(guide) {
   $("#adminGuideEditId").value = guide.guideId || "";
   $("#adminGuideEditFailure").value = guide.failure || "";
   $("#adminGuideEditDetail").value = guide.detail || "";
+  $("#adminGuideEditRootCause").value = guide.rootCause || "";
+  $("#adminGuideEditCheckPoint").value = guide.checkPoint || "";
+  $("#adminGuideEditExpectedValue").value = guide.expectedValue || "";
+  $("#adminGuideEditVerification").value = guide.verification || "";
+  $("#adminGuideEditToolEquipment").value = guide.toolEquipment || "";
+  $("#adminGuideEditRelatedModel").value = guide.relatedModel || "";
+  $("#adminGuideEditRelatedStation").value = guide.relatedStation || "";
   $("#adminGuideEditAuthor").value = guide.author || "";
   $("#adminGuideRemoveImage").checked = false;
 
@@ -4136,12 +4154,15 @@ function selectAdminFailureGuide(guide) {
 
 function clearAdminGuideNewImage() {
   adminGuideNewImage = null;
-
+  adminGuideNewImages = [];
   const input = $("#adminGuideNewImage");
   if (input) input.value = "";
-
-  $("#adminGuideNewImagePreview").removeAttribute("src");
-  $("#adminGuideNewImagePreviewWrap").classList.add("hidden");
+  const wrap = $("#adminGuideNewImagePreviewWrap");
+  if (wrap) {
+    wrap.classList.add("hidden");
+    wrap.innerHTML = `<span class="admin-image-title">รูปใหม่</span><img id="adminGuideNewImagePreview" alt="New failure guide image" /><button id="adminGuideClearNewImageBtn" class="btn ghost small" type="button">เอารูปใหม่ออก</button>`;
+    $("#adminGuideClearNewImageBtn").addEventListener("click",clearAdminGuideNewImage);
+  }
 }
 
 
@@ -4202,7 +4223,15 @@ async function saveAdminFailureGuideEdit(event) {
       failure,
       detail,
       author,
+      rootCause: $("#adminGuideEditRootCause").value.trim(),
+      checkPoint: $("#adminGuideEditCheckPoint").value.trim(),
+      expectedValue: $("#adminGuideEditExpectedValue").value.trim(),
+      verification: $("#adminGuideEditVerification").value.trim(),
+      toolEquipment: $("#adminGuideEditToolEquipment").value.trim(),
+      relatedModel: $("#adminGuideEditRelatedModel").value.trim(),
+      relatedStation: $("#adminGuideEditRelatedStation").value.trim(),
       removeImage: $("#adminGuideRemoveImage").checked ? "true" : "false",
+      imagesJson: JSON.stringify(adminGuideNewImages.map(image => ({ name:image.name, mimeType:image.mimeType, base64:image.base64 }))),
       imageName: adminGuideNewImage ? adminGuideNewImage.name : "",
       imageMimeType: adminGuideNewImage ? adminGuideNewImage.mimeType : "",
       imageBase64: adminGuideNewImage ? adminGuideNewImage.base64 : ""
@@ -4729,7 +4758,7 @@ function createTopFailureChartPng(
 
       const barWidth =
         (group.count / maxCount) *
-        470;
+        650;
 
       ctx.fillStyle =
         colors.primary;
@@ -4815,9 +4844,13 @@ function createTopFailureChartPng(
     }
   );
 
-  return dataUrlToXlsxImage(
-    canvas.toDataURL("image/png")
-  );
+  return {
+    ...dataUrlToXlsxImage(
+      canvas.toDataURL("image/png")
+    ),
+    pixelWidth: width,
+    pixelHeight: height
+  };
 }
 
 
@@ -4901,9 +4934,13 @@ function createTimelineChartPng(
       120
     );
 
-    return dataUrlToXlsxImage(
-      canvas.toDataURL("image/png")
-    );
+    return {
+      ...dataUrlToXlsxImage(
+        canvas.toDataURL("image/png")
+      ),
+      pixelWidth: width,
+      pixelHeight: height
+    };
   }
 
   const chartLeft = 48;
@@ -5061,9 +5098,107 @@ function createTimelineChartPng(
 
   ctx.textAlign = "left";
 
-  return dataUrlToXlsxImage(
-    canvas.toDataURL("image/png")
-  );
+  return {
+    ...dataUrlToXlsxImage(
+      canvas.toDataURL("image/png")
+    ),
+    pixelWidth: width,
+    pixelHeight: height
+  };
+}
+
+
+function getDashboardBreakdownData(records, field) {
+  const map = new Map();
+
+  records.forEach(record => {
+    const name = String(record[field] || "").trim() || "(ไม่ระบุ)";
+    map.set(name, (map.get(name) || 0) + 1);
+  });
+
+  return Array.from(map.entries())
+    .map(([name, count]) => ({ name, count }))
+    .sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.name.localeCompare(b.name)
+    )
+    .slice(0, 12);
+}
+
+
+function createBreakdownChartPng(title, items) {
+  const colors = dashboardCanvasColors();
+  const list = Array.isArray(items) ? items : [];
+  const width = 820;
+  const rowHeight = 56;
+  const height = Math.max(300, 92 + Math.max(list.length, 1) * rowHeight);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = colors.background;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = colors.text;
+  ctx.font = "700 25px Arial, sans-serif";
+  ctx.fillText(title, 28, 38);
+
+  ctx.fillStyle = colors.muted;
+  ctx.font = "13px Arial, sans-serif";
+  ctx.fillText("Top 12 จาก Filter Dashboard ปัจจุบัน", 28, 62);
+
+  if (!list.length) {
+    ctx.font = "16px Arial, sans-serif";
+    ctx.fillText("ยังไม่มีข้อมูลในช่วงที่เลือก", 28, 112);
+
+    return {
+      ...dataUrlToXlsxImage(canvas.toDataURL("image/png")),
+      pixelWidth: width,
+      pixelHeight: height
+    };
+  }
+
+  const max = Math.max(...list.map(item => item.count), 1);
+
+  list.forEach((item, index) => {
+    const y = 82 + index * rowHeight;
+    const trackX = 220;
+    const trackWidth = 520;
+    const fillWidth = Math.max(6, (item.count / max) * trackWidth);
+
+    ctx.fillStyle = colors.text;
+    ctx.font = "700 13px Arial, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText(
+      canvasFitText(ctx, item.name, 175),
+      28,
+      y + 19
+    );
+
+    ctx.fillStyle = colors.soft;
+    canvasRoundRect(ctx, trackX, y + 8, trackWidth, 14, 7);
+    ctx.fill();
+
+    ctx.fillStyle = colors.primary;
+    canvasRoundRect(ctx, trackX, y + 8, fillWidth, 14, 7);
+    ctx.fill();
+
+    ctx.fillStyle = colors.text;
+    ctx.font = "700 12px Arial, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(String(item.count), width - 28, y + 19);
+  });
+
+  ctx.textAlign = "left";
+
+  return {
+    ...dataUrlToXlsxImage(canvas.toDataURL("image/png")),
+    pixelWidth: width,
+    pixelHeight: height
+  };
 }
 
 
@@ -5333,7 +5468,7 @@ function xlsxBuildDashboardSheetXml({
 
   <sheetViews>
     <sheetView workbookViewId="0">
-      <pane ySplit="${headerRow}" topLeftCell="A${headerRow + 1}" activePane="bottomLeft" state="frozen"/>
+      <pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/>
     </sheetView>
   </sheetViews>
 
@@ -5367,191 +5502,140 @@ function xlsxBuildDashboardSheetXml({
 
 
 async function exportDashboardExcel() {
-  const button =
-    $("#exportDashboardExcelBtn");
-
-  const originalText =
-    button.textContent;
+  const button = $("#exportDashboardExcelBtn");
+  const originalText = button.textContent;
 
   button.disabled = true;
-  button.textContent =
-    "กำลังสร้าง Excel...";
+  button.textContent = "กำลังสร้าง Excel...";
 
   try {
-    const records =
-      getDashboardFilteredRecords();
-
-    const context =
-      getDashboardExportContext();
-
-    const kpis =
-      getDashboardKpiData(records);
-
-    const topFailure =
-      getDashboardTopFailureData(
-        records
-      );
-
-    const timeline =
-      getDashboardTimelineData(
-        records
-      );
+    const records = getDashboardFilteredRecords();
+    const context = getDashboardExportContext();
+    const kpis = getDashboardKpiData(records);
+    const topFailure = getDashboardTopFailureData(records);
+    const timeline = getDashboardTimelineData(records);
+    const modelBreakdown = getDashboardBreakdownData(records, "model");
+    const stationBreakdown = getDashboardBreakdownData(records, "station");
 
     const imageRecords = [];
-
     let topImage = null;
     let timelineImage = null;
+    let modelImage = null;
+    let stationImage = null;
 
     try {
-      topImage =
-        createTopFailureChartPng(
-          topFailure.groups,
-          topFailure.total,
-          topFailure.limit
-        );
-
-      const topDisplayWidth =
-        720;
-
-      const topDisplayHeight =
-        Math.min(
-          1000,
-          Math.max(
-            360,
-            topImage.bytes.length
-              ? 116 +
-                Math.max(
-                  topFailure.groups.length,
-                  1
-                ) *
-                72
-              : 360
-          )
-        );
+      topImage = createTopFailureChartPng(
+        topFailure.groups,
+        topFailure.total,
+        topFailure.limit
+      );
 
       imageRecords.push({
         ...topImage,
         name: "Top Failure",
         sheetRow: 9,
         imageColumn: 0,
-        cx:
-          topDisplayWidth *
-          9525,
-        cy:
-          topDisplayHeight *
-          9525
+        cx: (Number(topImage.pixelWidth) || 820) * 9525,
+        cy: (Number(topImage.pixelHeight) || 360) * 9525
       });
-
     } catch (err) {
-      console.warn(
-        "Top Failure chart export failed:",
-        err
-      );
+      console.warn("Top Failure chart export failed:", err);
     }
 
     try {
-      timelineImage =
-        createTimelineChartPng(
-          timeline
-        );
-
-      const timelineWidth =
-        Math.min(
-          1200,
-          Math.max(
-            720,
-            100 +
-              Math.max(
-                timeline.values.length,
-                1
-              ) *
-              55
-          )
-        );
+      timelineImage = createTimelineChartPng(timeline);
 
       imageRecords.push({
         ...timelineImage,
         name: "Timeline",
         sheetRow: 9,
         imageColumn: 6,
-        cx:
-          timelineWidth *
-          9525,
-        cy:
-          500 *
-          9525
+        cx: (Number(timelineImage.pixelWidth) || 820) * 9525,
+        cy: (Number(timelineImage.pixelHeight) || 500) * 9525
       });
-
     } catch (err) {
-      console.warn(
-        "Timeline chart export failed:",
-        err
-      );
+      console.warn("Timeline chart export failed:", err);
     }
 
-    const topRowsNeeded =
-      topFailure.groups.length
-        ? Math.ceil(
-            Math.min(
-              1000,
-              116 +
-              topFailure.groups.length *
-              72
-            ) / 20
-          )
-        : 18;
+    const topRowsNeeded = Math.ceil(
+      (Number(topImage?.pixelHeight) || 360) / 20
+    );
+    const timelineRowsNeeded = Math.ceil(
+      (Number(timelineImage?.pixelHeight) || 500) / 20
+    );
 
-    const timelineRowsNeeded =
-      Math.ceil(
-        500 / 20
+    const breakdownStartRow =
+      10 + Math.max(topRowsNeeded, timelineRowsNeeded) + 2;
+
+    try {
+      modelImage = createBreakdownChartPng(
+        "Model Breakdown",
+        modelBreakdown
       );
 
+      imageRecords.push({
+        ...modelImage,
+        name: "Model Breakdown",
+        sheetRow: breakdownStartRow,
+        imageColumn: 0,
+        cx: (Number(modelImage.pixelWidth) || 820) * 9525,
+        cy: (Number(modelImage.pixelHeight) || 300) * 9525
+      });
+    } catch (err) {
+      console.warn("Model Breakdown export failed:", err);
+    }
+
+    try {
+      stationImage = createBreakdownChartPng(
+        "Station Breakdown",
+        stationBreakdown
+      );
+
+      imageRecords.push({
+        ...stationImage,
+        name: "Station Breakdown",
+        sheetRow: breakdownStartRow,
+        imageColumn: 6,
+        cx: (Number(stationImage.pixelWidth) || 820) * 9525,
+        cy: (Number(stationImage.pixelHeight) || 300) * 9525
+      });
+    } catch (err) {
+      console.warn("Station Breakdown export failed:", err);
+    }
+
+    const modelRowsNeeded = Math.ceil(
+      (Number(modelImage?.pixelHeight) || 300) / 20
+    );
+    const stationRowsNeeded = Math.ceil(
+      (Number(stationImage?.pixelHeight) || 300) / 20
+    );
+
     const rankingStartRow =
-      10 +
-      Math.max(
-        topRowsNeeded,
-        timelineRowsNeeded
-      ) +
+      breakdownStartRow +
+      Math.max(modelRowsNeeded, stationRowsNeeded) +
       2;
 
-    const sheetXml =
-      xlsxBuildDashboardSheetXml({
-        context,
-        kpis,
-        topFailure,
-        timeline,
-        rankingStartRow,
-        hasTopChart:
-          Boolean(topImage),
-        hasTimelineChart:
-          Boolean(timelineImage)
-      });
+    const sheetXml = xlsxBuildDashboardSheetXml({
+      context,
+      kpis,
+      topFailure,
+      timeline,
+      rankingStartRow,
+      hasTopChart: Boolean(topImage),
+      hasTimelineChart: Boolean(timelineImage)
+    });
 
-    const entries =
-      xlsxBuildSingleSheetEntries({
-        sheetName:
-          "Failure Dashboard",
-        sheetXml,
-        imageRecords
-      });
+    const entries = xlsxBuildSingleSheetEntries({
+      sheetName: "Failure Dashboard",
+      sheetXml,
+      imageRecords
+    });
 
-    const zipBytes =
-      xlsxBuildZip(entries);
+    const zipBytes = xlsxBuildZip(entries);
 
-    const periodPart =
-      sanitizeExportFilePart(
-        context.periodValue
-      ) || "ALL";
-
-    const modelPart =
-      sanitizeExportFilePart(
-        context.model
-      ) || "ALL_MODEL";
-
-    const stationPart =
-      sanitizeExportFilePart(
-        context.station
-      ) || "ALL_STATION";
+    const periodPart = sanitizeExportFilePart(context.periodValue) || "ALL";
+    const modelPart = sanitizeExportFilePart(context.model) || "ALL_MODEL";
+    const stationPart = sanitizeExportFilePart(context.station) || "ALL_STATION";
 
     downloadBinaryFile(
       `Failure_Dashboard_${periodPart}_${modelPart}_${stationPart}_${exportTimestamp()}.xlsx`,
@@ -5560,89 +5644,127 @@ async function exportDashboardExcel() {
     );
 
     toast(
-      `Export Dashboard ${records.length} Records พร้อมกราฟแล้ว`,
+      `Export Dashboard ${records.length} Records พร้อมกราฟทั้งหมดแล้ว`,
       "success"
     );
 
   } catch (err) {
     console.error(err);
-
-    toast(
-      err.message ||
-      "Export Dashboard Excel ไม่สำเร็จ",
-      "error"
-    );
+    toast(err.message || "Export Dashboard Excel ไม่สำเร็จ", "error");
 
   } finally {
     button.disabled = false;
-    button.textContent =
-      originalText;
+    button.textContent = originalText;
   }
 }
 
 
+/* =========================
+   PRODUCTION RUNTIME
+========================= */
+function bindProductionRuntime() {
+  window.addEventListener("online", async () => {
+    isNetworkOnline = true;
+    updateNetworkState();
+    if (isConfigured()) {
+      await refreshAllData();
+      toast("กลับมา Online แล้ว · Refresh ข้อมูลแล้ว", "success");
+    }
+  });
+  window.addEventListener("offline", () => {
+    isNetworkOnline = false;
+    updateNetworkState();
+    toast("Offline · ปิดการบันทึก/แก้ไขชั่วคราว", "error");
+  });
+  updateNetworkState();
+}
+
+function mutationControlIds() {
+  return ["saveBtn","saveFailureGuideBtn","adminSaveEditBtn","adminGuideSaveEditBtn","adminNormalizeBtn","adminMergeFailureBtn","adminBackupNowBtn","adminInstallBackupTriggerBtn"];
+}
+
+function updateNetworkState() {
+  const online = navigator.onLine;
+  isNetworkOnline = online;
+  const banner = $("#networkBanner");
+  if (banner) {
+    banner.classList.toggle("hidden", online);
+    if (!online) {
+      $("#networkBannerTitle").textContent = "Offline";
+      $("#networkBannerText").textContent = "ไม่มีการเชื่อมต่อ Internet · ปิดการบันทึก/แก้ไข/ลบชั่วคราว";
+    }
+  }
+  mutationControlIds().forEach(id => {
+    const el = $("#" + id);
+    if (!el) return;
+    el.classList.toggle("offline-disabled", !online);
+    if (!online) {
+      el.dataset.offlineDisabled = "1";
+      el.disabled = true;
+    } else if (el.dataset.offlineDisabled === "1") {
+      delete el.dataset.offlineDisabled;
+      if (!["adminSaveEditBtn","adminGuideSaveEditBtn"].includes(id)) el.disabled = false;
+    }
+  });
+}
+
+function requireOnline() {
+  if (!navigator.onLine) throw new Error("ขณะนี้ Offline กรุณารอ Internet กลับมาก่อนทำรายการ");
+}
 
 /* =========================
    ADMIN
 ========================= */
 
 function bindAdmin() {
-  $("#adminLoginForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-
+  $("#adminLoginForm").addEventListener("submit", async event => {
+    event.preventDefault();
     const username = $("#adminUsername").value.trim();
     const password = $("#adminPassword").value;
-
-    if (!username) {
-      toast("กรุณาใส่ User", "error");
-      return;
+    if (!username || !password) { toast("กรุณาใส่ User และ Password", "error"); return; }
+    try {
+      requireOnline();
+      const backend = await checkAdminBackendVersion();
+      if (!backend.ok) throw new Error(backend.error);
+      const opId = createAdminOpId();
+      const body = new URLSearchParams({ action:"adminLogin", opId, username, password });
+      await fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body});
+      const status = await pollOperationStatus(opId);
+      if (!status.sessionToken) throw new Error("Backend ไม่ได้ส่ง Admin Session Token");
+      adminLoggedIn = true;
+      adminSessionUser = username;
+      adminSessionToken = status.sessionToken;
+      $("#adminPassword").value = "";
+      $("#adminLoginCard").classList.add("hidden");
+      $("#adminWorkspace").classList.remove("hidden");
+      $("#adminSessionUser").textContent = `User: ${username}`;
+      $("#adminBackendStatus").textContent = `Backend: ${backend.version}`;
+      $("#adminBackendStatus").classList.add("ok");
+      renderAdminTable();
+      await Promise.all([loadAdminFailureGuides(),loadFailureMasters(),loadProductionStatus(),loadAdminAudit()]);
+      toast("เข้าสู่ Admin แล้ว", "success");
+    } catch (err) {
+      console.error(err);
+      toast(err.message || "Admin Login ไม่สำเร็จ", "error");
     }
-
-    const hash = await sha256(password);
-
-    // SHA-256 of password: adminmin
-    if (hash !== "74da6b097821eee22b14dff779bf7ed422b1bac41e98e356a176e1f50f36a3a4") {
-      toast("Password ไม่ถูกต้อง", "error");
-      return;
-    }
-
-    const backend = await checkAdminBackendVersion();
-
-    if (!backend.ok) {
-      toast(backend.error, "error");
-      return;
-    }
-
-    adminLoggedIn = true;
-    adminSessionUser = username;
-    adminSessionPassword = password;
-
-    $("#adminLoginCard").classList.add("hidden");
-    $("#adminWorkspace").classList.remove("hidden");
-    $("#adminSessionUser").textContent = `User: ${username}`;
-    $("#adminBackendStatus").textContent = `Backend: ${backend.version}`;
-    $("#adminBackendStatus").classList.add("ok");
-
-    renderAdminTable();
-    await loadAdminFailureGuides();
-    toast("เข้าสู่ Admin แล้ว", "success");
   });
 
   $("#adminLogoutBtn").addEventListener("click", logoutAdmin);
   $("#adminReloadBtn").addEventListener("click", async () => {
     await refreshAllData({ showToast: true });
     await loadAdminFailureGuides();
+    await loadFailureMasters();
   });
-
   $("#adminNormalizeBtn").addEventListener("click", normalizeAllAdminRecords);
-
   $("#adminSearchBox").addEventListener("input", renderAdminTable);
   $("#adminClearEditBtn").addEventListener("click", clearAdminEditor);
-
   $("#adminEditStartRepair").addEventListener("input", updateAdminRepairTimeHint);
   $("#adminEditFinishRepair").addEventListener("input", updateAdminRepairTimeHint);
-
   $("#adminEditForm").addEventListener("submit", saveAdminEdit);
+  $("#adminBackupNowBtn").addEventListener("click", adminBackupNow);
+  $("#adminInstallBackupTriggerBtn").addEventListener("click", adminInstallBackupTrigger);
+  $("#adminReloadAuditBtn").addEventListener("click", loadAdminAudit);
+  $("#adminMergeFailureBtn").addEventListener("click", mergeFailureAdmin);
 }
 
 async function sha256(text) {
@@ -5675,7 +5797,7 @@ async function checkAdminBackendVersion() {
       return {
         ok: false,
         error:
-          `Frontend V22.3 ต้องใช้ Apps Script ${REQUIRED_BACKEND_VERSION} แต่ Backend ตอนนี้เป็น ${version || "เวอร์ชันเก่า"} ` +
+          `Frontend ${FRONTEND_VERSION} ต้องใช้ Apps Script ${REQUIRED_BACKEND_VERSION} แต่ Backend ตอนนี้เป็น ${version || "เวอร์ชันเก่า"} ` +
           `กรุณา Deploy → Manage deployments → Edit → New version → Deploy`
       };
     }
@@ -5684,7 +5806,7 @@ async function checkAdminBackendVersion() {
       return {
         ok: false,
         error:
-          "Frontend/API History order ไม่ตรงกัน กรุณาใช้ Frontend และ Code.gs จาก V22.2 ชุดเดียวกัน"
+          "Frontend/API History order ไม่ตรงกัน กรุณาใช้ Frontend และ Code.gs จาก V23 ชุดเดียวกัน"
       };
     }
 
@@ -5703,19 +5825,31 @@ async function checkAdminBackendVersion() {
 
 
 function createAdminOpId() {
+  const bytes = new Uint32Array(4);
+
+  if (window.crypto && window.crypto.getRandomValues) {
+    window.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 0xFFFFFFFF);
+    }
+  }
+
   return (
     "op_" +
     Date.now().toString(36) +
     "_" +
-    Math.random().toString(36).slice(2, 12)
+    Array.from(bytes)
+      .map(value => value.toString(36))
+      .join("")
   );
 }
 
 
 
-async function pollOperationStatus(opId) {
-  // V22.1: เพิ่มเวลารอ เพราะ Save รูป + Failure Summary อาจใช้เวลามากกว่าเดิม
-  for (let attempt = 0; attempt < 40; attempt++) {
+async function pollOperationStatus(opId, maxAttempts = 90) {
+  // V23: งานรูป/Normalize/Backup อาจใช้เวลานานกว่าการ Save ปกติ
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await sleep(attempt === 0 ? 300 : 450);
 
     let status;
@@ -5728,7 +5862,7 @@ async function pollOperationStatus(opId) {
 
     if (status && status.error && /Unknown action/i.test(status.error)) {
       throw new Error(
-        "Apps Script ต้องเป็น V22.2 สำหรับ Frontend V22.3 นี้ กรุณาตรวจ Deployment"
+        "Apps Script ต้องเป็น V23.0 สำหรับ Frontend V23.0 นี้ กรุณาตรวจ Deployment"
       );
     }
 
@@ -5752,6 +5886,7 @@ async function pollOperationStatus(opId) {
 }
 
 async function sendSaveOperation(values) {
+  requireOnline();
   const opId = createAdminOpId();
 
   const body = new URLSearchParams({
@@ -5774,12 +5909,13 @@ async function sendSaveOperation(values) {
 
 
 async function sendAdminOperation(action, values) {
+  requireOnline();
   const opId = createAdminOpId();
 
   const body = new URLSearchParams({
     action,
     opId,
-    adminPassword: adminSessionPassword,
+    adminSessionToken,
     ...values
   });
 
@@ -5792,13 +5928,27 @@ async function sendAdminOperation(action, values) {
     body
   });
 
-  return pollOperationStatus(opId);
+  const heavyActions = new Set([
+    "adminNormalizeAll",
+    "adminFailureMerge",
+    "adminCreateBackup",
+    "adminInstallBackupTrigger"
+  ]);
+
+  return pollOperationStatus(
+    opId,
+    heavyActions.has(action) ? 240 : 90
+  );
 }
 
 function logoutAdmin() {
   adminLoggedIn = false;
+  if (adminSessionToken && navigator.onLine) {
+    const body = new URLSearchParams({ action:"adminLogout", opId:createAdminOpId(), adminSessionToken });
+    fetch(GAS_URL,{method:"POST",mode:"no-cors",headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},body}).catch(() => {});
+  }
   adminSessionUser = "";
-  adminSessionPassword = "";
+  adminSessionToken = "";
   adminSelectedRepairId = "";
   adminSelectedGuideId = "";
   allFailureGuides = [];
@@ -5808,6 +5958,81 @@ function logoutAdmin() {
   $("#adminWorkspace").classList.add("hidden");
   $("#adminLoginCard").classList.remove("hidden");
   clearAdminEditor();
+}
+
+async function loadProductionStatus() {
+  if (!adminLoggedIn) return;
+  try {
+    const [health, backup] = await Promise.all([
+      jsonp("health"),
+      sendAdminOperation("adminGetBackupStatus", {})
+    ]);
+    const security = health.security || {};
+    const warning = Boolean(security.warning);
+    $("#adminSecurityStatus").textContent = warning ? "ต้องตรวจ Security" : "พร้อมใช้งาน";
+    $("#adminSecurityStatus").classList.toggle("danger-text", warning);
+    $("#adminWriteAccessStatus").textContent = `Write Access: ${security.writeAccessMode || "UNKNOWN"}${security.allowedDomain ? ` · ${security.allowedDomain}` : ""}`;
+    $("#adminBackupStatus").textContent = backup.ok && backup.lastBackup ? `${backup.lastBackup.tag || "BACKUP"} · ${backup.lastBackup.time || "-"}` : "ยังไม่เคย Backup";
+    $("#adminBackupTriggerStatus").textContent = backup.triggerInstalled ? "Trigger: 02:00 Daily ✅" : "Trigger: ยังไม่ได้ติดตั้ง";
+  } catch (err) { console.error(err); $("#adminSecurityStatus").textContent = "โหลดสถานะไม่ได้"; }
+}
+
+async function loadAdminAudit() {
+  if (!adminLoggedIn || !adminSessionToken) return;
+  try {
+    const res = await sendAdminOperation(
+      "adminGetAudit",
+      { limit: "50" }
+    );
+    if (!res.ok) throw new Error(res.error || "โหลด Audit Log ไม่สำเร็จ");
+    const rows = Array.isArray(res.audit) ? res.audit : [];
+    $("#adminAuditCount").textContent = String(rows.length);
+    $("#adminAuditBody").innerHTML = rows.length ? rows.map(item => `<tr><td>${esc(item.timestamp||"")}</td><td>${esc(item.actor||"")}</td><td>${esc(item.action||"")}</td><td>${esc(item.entityType||"")}</td><td>${esc(item.entityId||"")}</td></tr>`).join("") : '<tr><td colspan="5" class="empty">ยังไม่มี Audit Log</td></tr>';
+  } catch (err) { console.error(err); $("#adminAuditBody").innerHTML = '<tr><td colspan="5" class="empty">โหลด Audit Log ไม่สำเร็จ</td></tr>'; }
+}
+
+async function loadFailureMasters() {
+  if (!adminLoggedIn) return;
+  try {
+    const res = await sendAdminOperation(
+      "adminGetFailureMasters",
+      {}
+    );
+    if (!res.ok) throw new Error(res.error || "โหลด Failure Master ไม่สำเร็จ");
+    allFailureMasters = Array.isArray(res.masters) ? res.masters : [];
+    const aliases = Array.isArray(res.aliases) ? res.aliases : [];
+    const options = uniqueSorted([...allFailureMasters.map(i=>i.failure),...aliases.map(i=>i.alias)].filter(Boolean));
+    $("#failureMasterOptions").innerHTML = options.map(v=>`<option value="${escAttr(v)}"></option>`).join("");
+    $("#failureMasterSummary").textContent = `Master: ${allFailureMasters.length} · Alias: ${aliases.length}`;
+  } catch (err) { console.error(err); $("#failureMasterSummary").textContent = "โหลด Failure Master ไม่สำเร็จ"; }
+}
+
+async function mergeFailureAdmin() {
+  if (!adminLoggedIn) return;
+  const source = $("#adminMergeSource").value.trim();
+  const target = $("#adminMergeTarget").value.trim();
+  if (!source || !target) { toast("กรุณาใส่ Source และ Target Failure", "error"); return; }
+  if (source.toLocaleLowerCase() === target.toLocaleLowerCase()) { toast("Source และ Target ต้องไม่ใช่ชื่อเดียวกัน", "error"); return; }
+  if (!confirm(`รวม Failure นี้หรือไม่?\n\n${source}\n→ ${target}\n\nระบบจะอัปเดต Repair_Log, Failure_Guide, Alias และ Summary`)) return;
+  try {
+    const result = await sendAdminOperation("adminFailureMerge",{source,target});
+    toast(`Merge สำเร็จ · Repair ${result.repairRows||0} แถว · Guide ${result.guideRows||0} แถว`,"success");
+    $("#adminMergeSource").value = ""; $("#adminMergeTarget").value = "";
+    await refreshAllData();
+    await Promise.all([loadFailureMasters(),loadAdminFailureGuides(),loadAdminAudit()]);
+  } catch (err) { console.error(err); toast(err.message || "Merge Failure ไม่สำเร็จ","error"); }
+}
+
+async function adminBackupNow() {
+  if (!adminLoggedIn) return;
+  try { const r=await sendAdminOperation("adminCreateBackup",{}); toast(`Backup สำเร็จ: ${r.backupName||""}`,"success"); await loadProductionStatus(); await loadAdminAudit(); }
+  catch(err){ console.error(err); toast(err.message||"Backup ไม่สำเร็จ","error"); }
+}
+
+async function adminInstallBackupTrigger() {
+  if (!adminLoggedIn) return;
+  try { await sendAdminOperation("adminInstallBackupTrigger",{}); toast("ติดตั้ง Auto Backup เวลา 02:00 แล้ว","success"); await loadProductionStatus(); await loadAdminAudit(); }
+  catch(err){ console.error(err); toast(err.message||"ติดตั้ง Backup Trigger ไม่สำเร็จ","error"); }
 }
 
 function renderAdminTable() {

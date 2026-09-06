@@ -1,7 +1,9 @@
 /**
- * setup.gs V22.2
- * ไม่เพิ่ม/ลบ Column
- * ตรวจ Sheet และแก้ Header A:N ให้ตรงมาตรฐาน
+ * setup.gs V23.0 Production Ready
+ * - ไม่ลบข้อมูลเดิม
+ * - Repair_Log ยังใช้ Canonical A:N เดิม
+ * - เพิ่ม Production sheets สำหรับ Knowledge / Audit / Master / Images
+ * - Admin password เก็บเฉพาะ SHA-256 ใน Script Properties
  */
 
 function setupSheets() {
@@ -42,20 +44,78 @@ function setupSheets() {
 
   master.setFrozenRows(1);
 
-  const guideSheet = ensureFailureGuideSheet_(ss);
-  const summarySheet = ensureFailureSummarySheet_(ss);
-  const summary = syncFailureSummary_();
+  const guideSheet =
+    ensureFailureGuideSheet_(ss);
 
-  const folder = getImageFolder_();
+  const guideImagesSheet =
+    ensureFailureGuideImagesSheet_(ss);
+
+  const summarySheet =
+    ensureFailureSummarySheet_(ss);
+
+  const failureMasterSheet =
+    ensureFailureMasterSheet_(ss);
+
+  const failureAliasSheet =
+    ensureFailureAliasSheet_(ss);
+
+  const auditSheet =
+    ensureAuditSheet_(ss);
+
+  const security =
+    ensureAdminPasswordConfigured_();
+
+  const props =
+    PropertiesService.getScriptProperties();
+
+  if (!props.getProperty('WRITE_ACCESS_MODE')) {
+    props.setProperty(
+      'WRITE_ACCESS_MODE',
+      'OPEN'
+    );
+
+    Logger.log(
+      'SECURITY WARNING: WRITE_ACCESS_MODE=OPEN. ' +
+      'ใช้เพื่อ Upgrade/ทดสอบเท่านั้น. Production แนะนำ configureWorkspaceWriteAccess() ' +
+      'หรือกำหนด WRITE_ACCESS_MODE=DOMAIN + ALLOWED_DOMAIN ใน Script Properties'
+    );
+  }
+
+  const migratedImages =
+    migrateLegacyGuideImages_();
+
+  const summary =
+    rebuildFailureSummary_();
+
+  const folder =
+    getImageFolder_();
 
   Logger.log('API Version: ' + API_VERSION);
-  Logger.log('Repair_Log Header OK');
+  Logger.log('Repair_Log Header OK (A:N preserved)');
   Logger.log('Failure_Guide ready: ' + guideSheet.getName());
+  Logger.log('Failure_Guide_Images ready: ' + guideImagesSheet.getName());
   Logger.log('Failure_Summary ready: ' + summarySheet.getName());
+  Logger.log('Failure_Master ready: ' + failureMasterSheet.getName());
+  Logger.log('Failure_Alias ready: ' + failureAliasSheet.getName());
+  Logger.log('Audit_Log ready: ' + auditSheet.getName());
   Logger.log('Failure Summary rows: ' + summary.length);
+  Logger.log('Legacy Guide Images migrated: ' + migratedImages);
   Logger.log('Image Folder URL: ' + folder.getUrl());
   Logger.log('Image Folder ID: ' + folder.getId());
-  Logger.log('Setup completed successfully');
+
+  if (security.generated) {
+    Logger.log('============================================================');
+    Logger.log('IMPORTANT - INITIAL ADMIN PASSWORD: ' + security.password);
+    Logger.log('เก็บ Password นี้ไว้ก่อนปิด Execution Log');
+    Logger.log('ถ้าลืม ให้ Run resetAdminPassword() เพื่อสร้างใหม่');
+    Logger.log('============================================================');
+  } else {
+    Logger.log('Admin Password: configured in Script Properties');
+  }
+
+  Logger.log('WRITE_ACCESS_MODE: ' + getWriteAccessMode_());
+  Logger.log('ALLOWED_DOMAIN: ' + (getAllowedDomain_() || '(not set)'));
+  Logger.log('Setup V23 completed successfully');
 }
 
 
@@ -75,8 +135,8 @@ function showRepairImageFolder() {
 
 
 /**
- * V22.2 Self Test
- * ไม่แก้ข้อมูลใน Sheet
+ * V23.0 Self Test
+ * ไม่แก้ข้อมูล Repair_Log
  */
 function runSelfTest() {
   const canonicalRow = [
@@ -125,5 +185,23 @@ function runSelfTest() {
     );
   }
 
-  Logger.log('V22.2 Self Test: PASS');
+  if (FAILURE_GUIDE_HEADERS.length !== 19) {
+    throw new Error(
+      'Self Test Fail: Failure_Guide headers must have 19 columns'
+    );
+  }
+
+  if (normalizeFailureKey_(' AC   LED  FAIL ') !== 'ac led fail') {
+    throw new Error(
+      'Self Test Fail: Failure normalization'
+    );
+  }
+
+  if (API_VERSION !== 'V23.0') {
+    throw new Error(
+      'Self Test Fail: API Version must be V23.0'
+    );
+  }
+
+  Logger.log('V23.0 Self Test: PASS');
 }

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
   <title>Troubleshoot Guideline</title>
-  <link rel="stylesheet" href="style.css?v=22.6" />
+  <link rel="stylesheet" href="style.css?v=23" />
 </head>
 <body>
   <header class="topbar">
@@ -18,6 +18,11 @@
       <div class="status" id="apiStatus">กำลังเชื่อมต่อ...</div>
     </div>
   </header>
+
+  <div id="networkBanner" class="network-banner hidden" role="status">
+    <strong id="networkBannerTitle">Offline</strong>
+    <span id="networkBannerText">ไม่มีการเชื่อมต่อ Internet · ปิดการบันทึก/แก้ไขชั่วคราว</span>
+  </div>
 
   <main class="container">
     <nav class="tabs" aria-label="เมนูหลัก">
@@ -199,17 +204,27 @@
           </div>
         </div>
 
-        <div class="filters">
-          <input id="searchBox" placeholder="ค้นหา Failure / Repair Action / Model / Station / คนทำ / Repair ID..." />
-          <select id="filterModel">
-            <option value="">ทุก Model</option>
-          </select>
+        <div class="history-filter-grid">
+          <label class="history-filter-search"><span>Search</span><input id="searchBox" placeholder="ค้นหา Failure / Repair Action / Model / Station / คนทำ / Repair ID..." /></label>
+          <label><span>Model</span><select id="filterModel"><option value="">ทุก Model</option></select></label>
+          <label><span>Station</span><select id="filterStation"><option value="">ทุก Station</option></select></label>
+          <label><span>Date From</span><input id="filterDateFrom" type="date" /></label>
+          <label><span>Date To</span><input id="filterDateTo" type="date" /></label>
+          <label><span>Sort By</span><select id="historySortBy">
+            <option value="newest" selected>ใหม่สุดก่อน</option>
+            <option value="oldest">เก่าสุดก่อน</option>
+            <option value="repairTimeDesc">Repair Time มาก → น้อย</option>
+            <option value="repairTimeAsc">Repair Time น้อย → มาก</option>
+            <option value="failureAZ">Failure A → Z</option>
+            <option value="modelAZ">Model A → Z</option>
+            <option value="stationAZ">Station A → Z</option>
+          </select></label>
+          <label><span>Rows / Page</span><select id="historyPageSize">
+            <option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="200">200</option>
+          </select></label>
+          <button id="clearHistoryFiltersBtn" class="btn ghost history-clear-filter" type="button">ล้าง Filter</button>
         </div>
-
-        <div class="history-export-note">
-          Excel History จะ Export ตาม Search และ Model Filter ที่กำลังเลือกอยู่
-          · ลำดับข้อมูลใหม่สุดก่อน
-        </div>
+        <div class="history-export-note">Excel History จะ Export ตาม Search + Model + Station + Date Range + Sort ที่เลือกอยู่ · Pagination มีผลเฉพาะหน้าจอ</div>
 
         <div class="table-wrap">
           <table>
@@ -233,8 +248,13 @@
           </table>
         </div>
 
-        <div class="table-footer">
+        <div class="table-footer history-footer">
           <span id="lastRefreshText">รีเฟรชล่าสุด: -</span>
+          <div class="history-pagination">
+            <button id="historyPrevBtn" class="btn ghost small" type="button">‹ ก่อนหน้า</button>
+            <span id="historyPageInfo">Page 1 / 1</span>
+            <button id="historyNextBtn" class="btn ghost small" type="button">ถัดไป ›</button>
+          </div>
           <span id="recordCount">0 รายการ</span>
         </div>
       </div>
@@ -479,6 +499,15 @@
           </div>
         </div>
 
+        <div class="card dashboard-panel">
+          <div class="panel-head"><div><h3>Model Breakdown</h3><p>จำนวน Repair Records แยกตาม Model</p></div></div>
+          <div id="modelBreakdownChart" class="breakdown-chart"><div class="dashboard-empty">ยังไม่มีข้อมูล</div></div>
+        </div>
+        <div class="card dashboard-panel">
+          <div class="panel-head"><div><h3>Station Breakdown</h3><p>จำนวน Repair Records แยกตาม Station</p></div></div>
+          <div id="stationBreakdownChart" class="breakdown-chart"><div class="dashboard-empty">ยังไม่มีข้อมูล</div></div>
+        </div>
+
         <div class="card dashboard-panel full-span">
           <div class="panel-head">
             <div>
@@ -662,6 +691,32 @@
 
         </div>
 
+        <div class="card admin-production-card">
+          <div class="panel-head"><div><h3>Production Control & Security</h3><p>Security / Backup / Audit / Failure Master</p></div></div>
+          <div class="production-status-grid">
+            <div class="production-status-item"><span>Security</span><strong id="adminSecurityStatus">Checking...</strong><small id="adminWriteAccessStatus">-</small></div>
+            <div class="production-status-item"><span>Backup</span><strong id="adminBackupStatus">ยังไม่มีข้อมูล</strong><small id="adminBackupTriggerStatus">Trigger: -</small></div>
+            <div class="production-status-item"><span>Audit Log</span><strong id="adminAuditCount">0</strong><small>รายการล่าสุดที่โหลด</small></div>
+          </div>
+          <div class="production-actions">
+            <button id="adminBackupNowBtn" class="btn primary" type="button">Backup ตอนนี้</button>
+            <button id="adminInstallBackupTriggerBtn" class="btn ghost" type="button">ติดตั้ง Auto Backup 02:00</button>
+            <button id="adminReloadAuditBtn" class="btn ghost" type="button">โหลด Audit Log</button>
+          </div>
+          <div class="admin-master-merge">
+            <h4>Failure Master / Merge</h4>
+            <p>รวมชื่อ Failure ที่พิมพ์ต่างกันให้เป็นหัวข้อเดียว เพื่อให้ Top Failure และ Count แม่นยำ</p>
+            <div class="admin-master-merge-grid">
+              <label><span>Source Failure / Alias</span><input id="adminMergeSource" list="failureMasterOptions" placeholder="ชื่อที่ต้องการรวม" /></label>
+              <label><span>Target Canonical Failure</span><input id="adminMergeTarget" list="failureMasterOptions" placeholder="ชื่อมาตรฐานปลายทาง" /></label>
+              <button id="adminMergeFailureBtn" class="btn warning" type="button">Merge Failure</button>
+            </div>
+            <datalist id="failureMasterOptions"></datalist>
+            <div id="failureMasterSummary" class="failure-master-summary">Master: 0 · Alias: 0</div>
+          </div>
+          <div class="audit-table-wrap"><table class="admin-table audit-table"><thead><tr><th>เวลา</th><th>User</th><th>Action</th><th>Type</th><th>ID</th></tr></thead><tbody id="adminAuditBody"><tr><td colspan="5" class="empty">ยังไม่ได้โหลด Audit Log</td></tr></tbody></table></div>
+        </div>
+
         <div class="card admin-toolbar-card admin-guide-toolbar">
           <div class="admin-toolbar">
             <div>
@@ -732,28 +787,30 @@
                 <textarea id="adminGuideEditFailure" rows="2"></textarea>
               </label>
 
-              <label>
-                <span>วิธีแก้ไขแบบละเอียด</span>
-                <textarea id="adminGuideEditDetail" rows="8"></textarea>
-              </label>
-
-              <label>
-                <span>ผู้เพิ่ม / คนทำ</span>
-                <input id="adminGuideEditAuthor" />
-              </label>
+              <label><span>Repair Step / วิธีแก้ไขแบบละเอียด</span><textarea id="adminGuideEditDetail" rows="7"></textarea></label>
+              <label><span>Root Cause</span><textarea id="adminGuideEditRootCause" rows="3"></textarea></label>
+              <label><span>Check Point</span><textarea id="adminGuideEditCheckPoint" rows="4"></textarea></label>
+              <label><span>Expected Value / Spec</span><textarea id="adminGuideEditExpectedValue" rows="3"></textarea></label>
+              <label><span>Verification หลังซ่อม</span><textarea id="adminGuideEditVerification" rows="3"></textarea></label>
+              <div class="admin-two-col">
+                <label><span>Tool / Equipment</span><input id="adminGuideEditToolEquipment" /></label>
+                <label><span>Related Model</span><input id="adminGuideEditRelatedModel" /></label>
+              </div>
+              <label><span>Related Station</span><input id="adminGuideEditRelatedStation" /></label>
+              <label><span>ผู้เพิ่ม / คนทำ</span><input id="adminGuideEditAuthor" /></label>
 
               <div id="adminGuideCurrentImageWrap" class="admin-image-box hidden">
                 <span class="admin-image-title">รูปปัจจุบัน</span>
                 <img id="adminGuideCurrentImage" alt="Current failure guide image" />
                 <label class="admin-checkbox">
                   <input type="checkbox" id="adminGuideRemoveImage" />
-                  <span>ลบรูปเดิมออกจาก Guide</span>
+                  <span>ลบรูปทั้งหมดออกจาก Guide</span>
                 </label>
               </div>
 
               <label>
-                <span>เพิ่ม / เปลี่ยนรูป</span>
-                <input id="adminGuideNewImage" type="file" accept="image/*" />
+                <span>เพิ่มรูปใหม่ (เลือกได้หลายรูป)</span>
+                <input id="adminGuideNewImage" type="file" accept="image/*" multiple />
               </label>
 
               <div id="adminGuideNewImagePreviewWrap" class="admin-image-box hidden">
@@ -819,6 +876,17 @@
       </div>
 
       <div class="failure-detail-body">
+        <div class="failure-analytics-grid">
+          <div class="failure-analytics-card"><span>Avg. Repair Time</span><strong id="failureAvgRepairTime">0 min</strong></div>
+          <div class="failure-analytics-card"><span>Last Seen</span><strong id="failureLastSeen">-</strong></div>
+          <div class="failure-analytics-card"><span>Top Model</span><strong id="failureTopModel">-</strong></div>
+          <div class="failure-analytics-card"><span>Top Station</span><strong id="failureTopStation">-</strong></div>
+        </div>
+        <div class="failure-analysis-details">
+          <div><h4>Model Breakdown</h4><div id="failureModelBreakdown" class="mini-breakdown"></div></div>
+          <div><h4>Station Breakdown</h4><div id="failureStationBreakdown" class="mini-breakdown"></div></div>
+        </div>
+        <div class="failure-recent-wrap"><h4>Recent Occurrences</h4><div id="failureRecentOccurrences" class="failure-recent-list"><span class="muted">ยังไม่มีข้อมูล</span></div></div>
         <div class="failure-guide-section-head">
           <div>
             <h3>วิธีแก้ไขแบบละเอียดที่เคยบันทึก</h3>
@@ -855,17 +923,16 @@
             <p id="failureGuideFormFailure"></p>
           </div>
 
-          <label>
-            <span>วิธีแก้ไขแบบละเอียด *</span>
-            <textarea
-              id="failureGuideDetailInput"
-              rows="8"
-              maxlength="12000"
-              placeholder="ใส่ขั้นตอนตรวจสอบ / จุดวัด / ค่าที่คาดหวัง / วิธีซ่อม / วิธี Verify หลังซ่อม..."
-              required
-            ></textarea>
-          </label>
-
+          <label><span>Repair Step / วิธีแก้ไขแบบละเอียด *</span><textarea id="failureGuideDetailInput" rows="7" maxlength="12000" placeholder="ใส่ขั้นตอนการแก้ไขเป็นลำดับ..." required></textarea></label>
+          <label><span>Root Cause</span><textarea id="failureGuideRootCauseInput" rows="3" maxlength="5000" placeholder="สาเหตุรากของปัญหา"></textarea></label>
+          <label><span>Check Point</span><textarea id="failureGuideCheckPointInput" rows="4" maxlength="5000" placeholder="จุดที่ต้องตรวจ / จุดวัด / Connector / Pin"></textarea></label>
+          <label><span>Expected Value / Spec</span><textarea id="failureGuideExpectedValueInput" rows="3" maxlength="5000" placeholder="ค่าที่ควรได้"></textarea></label>
+          <label><span>Verification หลังซ่อม</span><textarea id="failureGuideVerificationInput" rows="3" maxlength="5000" placeholder="วิธี Verify หลังซ่อม"></textarea></label>
+          <div class="guide-two-col">
+            <label><span>Tool / Equipment</span><input id="failureGuideToolEquipmentInput" maxlength="300" placeholder="DMM / Scope / Fixture / Software..." /></label>
+            <label><span>Related Model</span><input id="failureGuideRelatedModelInput" maxlength="300" placeholder="Model ที่เกี่ยวข้อง" /></label>
+          </div>
+          <label><span>Related Station</span><input id="failureGuideRelatedStationInput" maxlength="300" placeholder="ATS1 / ATS2 / ICP..." /></label>
           <label>
             <span>ผู้เพิ่ม / คนทำ</span>
             <input
@@ -876,8 +943,8 @@
           </label>
 
           <label>
-            <span>รูปประกอบ (ถ้ามี)</span>
-            <input id="failureGuideImageInput" type="file" accept="image/*" />
+            <span>รูปประกอบ (เลือกได้หลายรูป · สูงสุด 5 รูป)</span>
+            <input id="failureGuideImageInput" type="file" accept="image/*" multiple />
           </label>
 
           <div id="failureGuideImagePreviewWrap" class="guide-image-preview hidden">
@@ -923,6 +990,7 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="app.js?v=22.6"></script>
+  <script src="excel-engine.js?v=23"></script>
+  <script src="app.js?v=23"></script>
 </body>
 </html>
