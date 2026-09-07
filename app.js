@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'V23.0';
+const FRONTEND_VERSION = 'V23.1';
 const REQUIRED_BACKEND_VERSION = 'V23.0';
 
 const HISTORY_DISPLAY_ORDER = Object.freeze([
@@ -41,6 +41,11 @@ let allFailureMasters = [];
 let selectedFailureGuideImages = [];
 let adminGuideNewImages = [];
 let isNetworkOnline = navigator.onLine;
+let activeHistorySuggestion = {
+  type: "",
+  index: -1,
+  items: []
+};
 let activeFailureName = "";
 let currentFailureGuides = [];
 let currentFailureCount = 0;
@@ -62,6 +67,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   bindAdmin();
   bindFailureGuide();
   bindProductionRuntime();
+  bindRepairHistoryAutocomplete();
 
   try {
     await loadConfig();
@@ -535,7 +541,581 @@ function resetForm() {
   $("#finishRepair").value = "";
   $("#repairTime").value = "";
   clearSelectedImage();
+  hideRepairHistorySuggestionMenus();
+  initializeRepairHistorySuggestions();
 }
+
+
+/* =========================
+   V23.1 REPAIR HISTORY AUTOCOMPLETE
+   Source = existing Repair History records
+========================= */
+
+function normalizeHistorySuggestionValue(value) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLocaleLowerCase();
+}
+
+
+function historicalRecordsByContext({
+  useModel = true,
+  useStation = true,
+  useFailure = false
+} = {}) {
+  const model = String($("#model")?.value || "").trim();
+  const station = String($("#station")?.value || "").trim();
+  const failure = normalizeHistorySuggestionValue(
+    $("#failure")?.value || ""
+  );
+
+  return allRecords.filter(record => {
+    if (
+      useModel &&
+      model &&
+      String(record.model || "").trim() !== model
+    ) {
+      return false;
+    }
+
+    if (
+      useStation &&
+      station &&
+      normalizeHistorySuggestionValue(record.station) !==
+      normalizeHistorySuggestionValue(station)
+    ) {
+      return false;
+    }
+
+    if (
+      useFailure &&
+      failure &&
+      normalizeHistorySuggestionValue(record.failure) !== failure
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+}
+
+
+function buildHistoricalSuggestionItems(
+  records,
+  field,
+  queryValue = "",
+  limit = 12
+) {
+  const query = normalizeHistorySuggestionValue(queryValue);
+  const map = new Map();
+
+  records.forEach((record, recordIndex) => {
+    const value = String(record[field] || "").trim();
+    const key = normalizeHistorySuggestionValue(value);
+
+    if (!key) return;
+
+    if (query && !key.includes(query)) {
+      return;
+    }
+
+    if (!map.has(key)) {
+      map.set(key, {
+        value,
+        key,
+        count: 0,
+        firstIndex: recordIndex,
+        startsWith:
+          query
+            ? key.startsWith(query)
+            : false
+      });
+    }
+
+    map.get(key).count += 1;
+  });
+
+  return Array.from(map.values())
+    .sort((a, b) => {
+      if (a.startsWith !== b.startsWith) {
+        return a.startsWith ? -1 : 1;
+      }
+
+      if (b.count !== a.count) {
+        return b.count - a.count;
+      }
+
+      return a.firstIndex - b.firstIndex;
+    })
+    .slice(0, limit);
+}
+
+
+function getStationHistoryRecords() {
+  const byModel = historicalRecordsByContext({
+    useModel: true,
+    useStation: false,
+    useFailure: false
+  });
+
+  return byModel.length
+    ? byModel
+    : allRecords;
+}
+
+
+function getFailureHistoryRecords() {
+  const model = String($("#model")?.value || "").trim();
+  const station = String($("#station")?.value || "").trim();
+
+  const exactContext = historicalRecordsByContext({
+    useModel: true,
+    useStation: true,
+    useFailure: false
+  });
+
+  if (exactContext.length) {
+    return exactContext;
+  }
+
+  if (model) {
+    const modelOnly = historicalRecordsByContext({
+      useModel: true,
+      useStation: false,
+      useFailure: false
+    });
+
+    if (modelOnly.length) {
+      return modelOnly;
+    }
+  }
+
+  if (station) {
+    const stationOnly = allRecords.filter(
+      record =>
+        normalizeHistorySuggestionValue(record.station) ===
+        normalizeHistorySuggestionValue(station)
+    );
+
+    if (stationOnly.length) {
+      return stationOnly;
+    }
+  }
+
+  return allRecords;
+}
+
+
+function getRepairActionHistoryRecords() {
+  const failure = normalizeHistorySuggestionValue(
+    $("#failure")?.value || ""
+  );
+
+  if (failure) {
+    const sameFailure = allRecords.filter(
+      record =>
+        normalizeHistorySuggestionValue(record.failure) === failure
+    );
+
+    if (sameFailure.length) {
+      const model = String($("#model")?.value || "").trim();
+      const station = normalizeHistorySuggestionValue(
+        $("#station")?.value || ""
+      );
+
+      const sameContext = sameFailure.filter(record => {
+        const modelOk =
+          !model ||
+          String(record.model || "").trim() === model;
+
+        const stationOk =
+          !station ||
+          normalizeHistorySuggestionValue(record.station) === station;
+
+        return modelOk && stationOk;
+      });
+
+      return sameContext.length
+        ? sameContext
+        : sameFailure;
+    }
+  }
+
+  return getFailureHistoryRecords();
+}
+
+
+function initializeRepairHistorySuggestions() {
+  if (!$("#stationHistoryOptions")) return;
+
+  const stationRecords = getStationHistoryRecords();
+
+  const stationItems = buildHistoricalSuggestionItems(
+    stationRecords,
+    "station",
+    "",
+    100
+  );
+
+  $("#stationHistoryOptions").innerHTML =
+    stationItems
+      .map(item =>
+        `<option value="${escAttr(item.value)}"></option>`
+      )
+      .join("");
+
+  const stationHint = $("#stationHistoryHint");
+
+  if (stationHint) {
+    const model = String($("#model")?.value || "").trim();
+
+    stationHint.textContent =
+      stationItems.length
+        ? model
+          ? `พบ ${stationItems.length} Station จากประวัติของ Model ${model}`
+          : `พบ ${stationItems.length} Station จาก Repair History`
+        : "ยังไม่มี Station ใน Repair History";
+  }
+
+  updateFailureHistoryHint();
+  updateRepairActionHistoryHint();
+}
+
+
+function updateFailureHistoryHint() {
+  const hint = $("#failureHistoryHint");
+  if (!hint) return;
+
+  const items = buildHistoricalSuggestionItems(
+    getFailureHistoryRecords(),
+    "failure",
+    "",
+    9999
+  );
+
+  hint.textContent =
+    items.length
+      ? `พบ ${items.length} Failure ที่เคยกรอก · พิมพ์เพื่อค้นหา`
+      : "ยังไม่มี Failure เดิมในบริบทนี้ · สามารถพิมพ์ใหม่ได้";
+}
+
+
+function updateRepairActionHistoryHint() {
+  const hint = $("#repairActionHistoryHint");
+  if (!hint) return;
+
+  const failure = String($("#failure")?.value || "").trim();
+
+  const items = buildHistoricalSuggestionItems(
+    getRepairActionHistoryRecords(),
+    "repairAction",
+    "",
+    9999
+  );
+
+  hint.textContent =
+    items.length
+      ? failure
+        ? `พบ ${items.length} Repair Action ที่เคยใช้กับ Failure/บริบทนี้`
+        : `พบ ${items.length} Repair Action จาก Repair History`
+      : "ยังไม่มี Repair Action เดิม · สามารถพิมพ์ใหม่ได้";
+}
+
+
+function historySuggestionElements(type) {
+  if (type === "failure") {
+    return {
+      input: $("#failure"),
+      menu: $("#failureHistorySuggestions"),
+      field: "failure",
+      records: getFailureHistoryRecords()
+    };
+  }
+
+  return {
+    input: $("#repairAction"),
+    menu: $("#repairActionHistorySuggestions"),
+    field: "repairAction",
+    records: getRepairActionHistoryRecords()
+  };
+}
+
+
+function renderRepairHistorySuggestionMenu(type) {
+  const config = historySuggestionElements(type);
+
+  if (!config.input || !config.menu) {
+    return;
+  }
+
+  const query = config.input.value;
+
+  const items = buildHistoricalSuggestionItems(
+    config.records,
+    config.field,
+    query,
+    12
+  );
+
+  activeHistorySuggestion = {
+    type,
+    index: -1,
+    items
+  };
+
+  if (!items.length) {
+    config.menu.innerHTML =
+      '<div class="history-suggestion-empty">ไม่พบข้อมูลเดิมที่ตรงกัน · พิมพ์ค่าใหม่ได้</div>';
+
+    if (String(query || "").trim()) {
+      config.menu.classList.remove("hidden");
+    } else {
+      config.menu.classList.add("hidden");
+    }
+
+    return;
+  }
+
+  config.menu.innerHTML = items
+    .map((item, index) => `
+      <button
+        type="button"
+        class="history-suggestion-item"
+        role="option"
+        data-history-suggestion-index="${index}"
+      >
+        <span class="history-suggestion-text">${esc(item.value)}</span>
+        <span class="history-suggestion-meta">${item.count} ครั้ง</span>
+      </button>
+    `)
+    .join("");
+
+  config.menu.classList.remove("hidden");
+
+  config.menu
+    .querySelectorAll(".history-suggestion-item")
+    .forEach(button => {
+      button.addEventListener("mousedown", event => {
+        event.preventDefault();
+
+        const index = Number(
+          button.dataset.historySuggestionIndex
+        );
+
+        selectRepairHistorySuggestion(
+          type,
+          index
+        );
+      });
+    });
+}
+
+
+function selectRepairHistorySuggestion(type, index) {
+  const config = historySuggestionElements(type);
+  const item = activeHistorySuggestion.items[index];
+
+  if (!config.input || !item) return;
+
+  config.input.value = item.value;
+  config.menu.classList.add("hidden");
+
+  activeHistorySuggestion = {
+    type: "",
+    index: -1,
+    items: []
+  };
+
+  config.input.dispatchEvent(
+    new Event("change", {
+      bubbles: true
+    })
+  );
+
+  if (type === "failure") {
+    updateRepairActionHistoryHint();
+
+    window.setTimeout(() => {
+      $("#repairAction")?.focus();
+      renderRepairHistorySuggestionMenu("repairAction");
+    }, 0);
+  }
+}
+
+
+function moveRepairHistorySuggestion(type, direction) {
+  if (
+    activeHistorySuggestion.type !== type ||
+    !activeHistorySuggestion.items.length
+  ) {
+    renderRepairHistorySuggestionMenu(type);
+  }
+
+  const config = historySuggestionElements(type);
+  const buttons = Array.from(
+    config.menu.querySelectorAll(".history-suggestion-item")
+  );
+
+  if (!buttons.length) return;
+
+  activeHistorySuggestion.index += direction;
+
+  if (activeHistorySuggestion.index < 0) {
+    activeHistorySuggestion.index = buttons.length - 1;
+  }
+
+  if (activeHistorySuggestion.index >= buttons.length) {
+    activeHistorySuggestion.index = 0;
+  }
+
+  buttons.forEach((button, index) => {
+    button.classList.toggle(
+      "active",
+      index === activeHistorySuggestion.index
+    );
+  });
+
+  buttons[activeHistorySuggestion.index]
+    .scrollIntoView({
+      block: "nearest"
+    });
+}
+
+
+function handleRepairHistorySuggestionKeydown(type, event) {
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    moveRepairHistorySuggestion(type, 1);
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    moveRepairHistorySuggestion(type, -1);
+    return;
+  }
+
+  if (
+    event.key === "Enter" &&
+    !event.shiftKey &&
+    activeHistorySuggestion.type === type &&
+    activeHistorySuggestion.index >= 0
+  ) {
+    event.preventDefault();
+
+    selectRepairHistorySuggestion(
+      type,
+      activeHistorySuggestion.index
+    );
+
+    return;
+  }
+
+  if (event.key === "Escape") {
+    hideRepairHistorySuggestionMenus();
+  }
+}
+
+
+function hideRepairHistorySuggestionMenus() {
+  [
+    $("#failureHistorySuggestions"),
+    $("#repairActionHistorySuggestions")
+  ]
+    .filter(Boolean)
+    .forEach(menu =>
+      menu.classList.add("hidden")
+    );
+
+  activeHistorySuggestion = {
+    type: "",
+    index: -1,
+    items: []
+  };
+}
+
+
+function bindRepairHistoryAutocomplete() {
+  const model = $("#model");
+  const station = $("#station");
+  const failure = $("#failure");
+  const repairAction = $("#repairAction");
+
+  if (
+    !model ||
+    !station ||
+    !failure ||
+    !repairAction
+  ) {
+    return;
+  }
+
+  const contextChanged = () => {
+    initializeRepairHistorySuggestions();
+    hideRepairHistorySuggestionMenus();
+  };
+
+  model.addEventListener("input", contextChanged);
+  model.addEventListener("change", contextChanged);
+
+  station.addEventListener("input", () => {
+    updateFailureHistoryHint();
+    updateRepairActionHistoryHint();
+  });
+
+  station.addEventListener("change", contextChanged);
+
+  failure.addEventListener("focus", () => {
+    renderRepairHistorySuggestionMenu("failure");
+  });
+
+  failure.addEventListener("input", () => {
+    renderRepairHistorySuggestionMenu("failure");
+    updateRepairActionHistoryHint();
+  });
+
+  failure.addEventListener("keydown", event => {
+    handleRepairHistorySuggestionKeydown(
+      "failure",
+      event
+    );
+  });
+
+  failure.addEventListener("change", () => {
+    updateRepairActionHistoryHint();
+  });
+
+  repairAction.addEventListener("focus", () => {
+    renderRepairHistorySuggestionMenu("repairAction");
+  });
+
+  repairAction.addEventListener("input", () => {
+    renderRepairHistorySuggestionMenu("repairAction");
+  });
+
+  repairAction.addEventListener("keydown", event => {
+    handleRepairHistorySuggestionKeydown(
+      "repairAction",
+      event
+    );
+  });
+
+  document.addEventListener("mousedown", event => {
+    if (
+      event.target.closest(
+        ".history-autocomplete-field"
+      )
+    ) {
+      return;
+    }
+
+    hideRepairHistorySuggestionMenus();
+  });
+
+  initializeRepairHistorySuggestions();
+}
+
 
 function bindHistory() {
   $("#refreshBtn").addEventListener("click", async () => {
@@ -742,6 +1322,7 @@ async function loadHistory() {
     allRecords = records;
     syncHistoryModelFilterFromRecords();
     initializeHistoryFilterOptions();
+    initializeRepairHistorySuggestions();
     renderHistory();
     initializeDashboardOptions();
     renderDashboard();

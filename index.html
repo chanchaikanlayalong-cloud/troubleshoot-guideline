@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
   <title>Troubleshoot Guideline</title>
-  <link rel="stylesheet" href="style.css?v=23" />
+  <link rel="stylesheet" href="style.css?v=23.1" />
 </head>
 <body>
   <header class="topbar">
@@ -77,9 +77,19 @@
                 <datalist id="modelOptions"></datalist>
               </label>
 
-              <label>
+              <label class="history-autocomplete-field">
                 <span>Station <b>*</b></span>
-                <input name="station" id="station" placeholder="เช่น ATS1-01 / TP04" required />
+                <span class="field-hint">เลือกจาก Station ที่เคยกรอก หรือพิมพ์ค่าใหม่</span>
+                <input
+                  name="station"
+                  id="station"
+                  list="stationHistoryOptions"
+                  placeholder="เช่น ATS1-01 / TP04"
+                  autocomplete="off"
+                  required
+                />
+                <datalist id="stationHistoryOptions"></datalist>
+                <small id="stationHistoryHint" class="history-suggestion-hint"></small>
               </label>
             </div>
           </section>
@@ -94,26 +104,46 @@
             </div>
 
             <div class="form-grid">
-              <label class="full">
+              <label class="full history-autocomplete-field">
                 <span>Failure / Symptom <b>*</b></span>
-                <span class="field-hint">อาการเสีย / ปัญหาที่พบ</span>
+                <span class="field-hint">พิมพ์เพื่อค้นหา Failure ที่เคยกรอก หรือพิมพ์ Failure ใหม่</span>
                 <textarea
                   name="failure"
                   id="failure"
                   rows="3"
+                  autocomplete="off"
                   placeholder="เช่น Test item 31 Fail, DMM read error, No communication, Fixture contact abnormal..."
                   required></textarea>
+
+                <div
+                  id="failureHistorySuggestions"
+                  class="history-suggestion-menu hidden"
+                  role="listbox"
+                  aria-label="Failure ที่เคยกรอก"
+                ></div>
+
+                <small id="failureHistoryHint" class="history-suggestion-hint"></small>
               </label>
 
-              <label class="full">
+              <label class="full history-autocomplete-field">
                 <span>Repair Action <b>*</b></span>
-                <span class="field-hint">วิธีตรวจสอบและวิธีแก้ปัญหา</span>
+                <span class="field-hint">พิมพ์เพื่อค้นหาวิธีแก้ที่เคยใช้กับ Failure นี้ หรือพิมพ์วิธีใหม่</span>
                 <textarea
                   name="repairAction"
                   id="repairAction"
                   rows="4"
+                  autocomplete="off"
                   placeholder="ระบุสิ่งที่ตรวจสอบ อะไหล่/จุดที่แก้ไข และผลหลังดำเนินการ..."
                   required></textarea>
+
+                <div
+                  id="repairActionHistorySuggestions"
+                  class="history-suggestion-menu hidden"
+                  role="listbox"
+                  aria-label="Repair Action ที่เคยกรอก"
+                ></div>
+
+                <small id="repairActionHistoryHint" class="history-suggestion-hint"></small>
               </label>
 
               <label class="full image-field">
@@ -990,7 +1020,7 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="excel-engine.js?v=23"></script>
-  <script src="app.js?v=23"></script>
+  <script src="excel-engine.js?v=23.1"></script>
+  <script src="app.js?v=23.1"></script>
 </body>
 </html>
