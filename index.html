@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0b2f6f" />
   <title>Troubleshoot Guideline</title>
-  <link rel="stylesheet" href="style.css?v=23.1" />
+  <link rel="stylesheet" href="style.css?v=23.2" />
 </head>
 <body>
   <header class="topbar">
@@ -65,16 +65,35 @@
             </div>
 
             <div class="form-grid equipment-grid">
-              <label>
+              <label class="history-autocomplete-field">
                 <span>Model <b>*</b></span>
+                <span class="field-hint">เลือกจาก Model ที่เคยใช้ หรือพิมพ์ค่าใหม่</span>
                 <input
                   name="model"
                   id="model"
                   list="modelOptions"
                   placeholder="เลือกหรือพิมพ์ Model"
+                  autocomplete="off"
                   required
                 />
                 <datalist id="modelOptions"></datalist>
+
+                <button
+                  class="history-browse-btn"
+                  type="button"
+                  data-history-type="model"
+                >
+                  🔎 ค้น Model จากข้อมูลเดิม
+                </button>
+
+                <div
+                  id="modelHistorySuggestions"
+                  class="history-suggestion-menu hidden"
+                  role="listbox"
+                  aria-label="Model ที่เคยกรอก"
+                ></div>
+
+                <small id="modelHistoryHint" class="history-suggestion-hint"></small>
               </label>
 
               <label class="history-autocomplete-field">
@@ -89,6 +108,22 @@
                   required
                 />
                 <datalist id="stationHistoryOptions"></datalist>
+
+                <button
+                  class="history-browse-btn"
+                  type="button"
+                  data-history-type="station"
+                >
+                  🔎 ค้น Station จากข้อมูลเดิม
+                </button>
+
+                <div
+                  id="stationHistorySuggestions"
+                  class="history-suggestion-menu hidden"
+                  role="listbox"
+                  aria-label="Station ที่เคยกรอก"
+                ></div>
+
                 <small id="stationHistoryHint" class="history-suggestion-hint"></small>
               </label>
             </div>
@@ -115,6 +150,14 @@
                   placeholder="เช่น Test item 31 Fail, DMM read error, No communication, Fixture contact abnormal..."
                   required></textarea>
 
+                <button
+                  class="history-browse-btn"
+                  type="button"
+                  data-history-type="failure"
+                >
+                  🔎 ค้น Failure จากข้อมูลเดิม
+                </button>
+
                 <div
                   id="failureHistorySuggestions"
                   class="history-suggestion-menu hidden"
@@ -135,6 +178,14 @@
                   autocomplete="off"
                   placeholder="ระบุสิ่งที่ตรวจสอบ อะไหล่/จุดที่แก้ไข และผลหลังดำเนินการ..."
                   required></textarea>
+
+                <button
+                  class="history-browse-btn"
+                  type="button"
+                  data-history-type="repairAction"
+                >
+                  🔎 ค้น Repair Action จากข้อมูลเดิม
+                </button>
 
                 <div
                   id="repairActionHistorySuggestions"
@@ -1009,6 +1060,81 @@
     </div>
   </div>
 
+  <div
+    id="historyPickerModal"
+    class="history-picker-modal hidden"
+    aria-hidden="true"
+  >
+    <div id="historyPickerBackdrop" class="history-picker-backdrop"></div>
+
+    <section
+      class="history-picker-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="historyPickerTitle"
+    >
+      <div class="history-picker-handle" aria-hidden="true"></div>
+
+      <div class="history-picker-head">
+        <div>
+          <span class="history-picker-eyebrow">ข้อมูลที่เคยบันทึก</span>
+          <h3 id="historyPickerTitle">เลือกข้อมูลเดิม</h3>
+          <p id="historyPickerContext">ค้นจาก Repair History ทั้งหมด</p>
+        </div>
+
+        <button
+          id="historyPickerCloseBtn"
+          class="history-picker-close"
+          type="button"
+          aria-label="ปิด"
+        >×</button>
+      </div>
+
+      <label class="history-picker-search">
+        <span>ค้นหา</span>
+        <input
+          id="historyPickerSearch"
+          type="search"
+          inputmode="search"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="พิมพ์ได้หลายคำ เช่น dmm error"
+        />
+      </label>
+
+      <div class="history-picker-toolbar">
+        <span id="historyPickerResultCount">0 รายการ</span>
+
+        <button
+          id="historyPickerClearBtn"
+          class="btn ghost small"
+          type="button"
+        >
+          ล้างคำค้น
+        </button>
+      </div>
+
+      <div
+        id="historyPickerList"
+        class="history-picker-list"
+        role="listbox"
+      ></div>
+
+      <div class="history-picker-footer">
+        <span>หาไม่เจอ? ปิดหน้าต่างนี้แล้วพิมพ์ค่าใหม่ได้ตามปกติ</span>
+
+        <button
+          id="historyPickerUseTypedBtn"
+          class="btn primary"
+          type="button"
+        >
+          ใช้ค่าที่พิมพ์อยู่
+        </button>
+      </div>
+    </section>
+  </div>
+
   <div id="imageModal" class="image-modal hidden" aria-hidden="true">
     <div class="image-modal-backdrop" id="imageModalBackdrop"></div>
     <div class="image-modal-card">
@@ -1020,7 +1146,7 @@
   </div>
 
   <div id="toast" class="toast" role="status"></div>
-  <script src="excel-engine.js?v=23.1"></script>
-  <script src="app.js?v=23.1"></script>
+  <script src="excel-engine.js?v=23.2"></script>
+  <script src="app.js?v=23.2"></script>
 </body>
 </html>
